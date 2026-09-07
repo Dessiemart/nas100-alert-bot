@@ -36,6 +36,7 @@ jobs:
         run: |
           git config user.name "nas100-alert-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add state.json alerts_log.json
+          git add state.json
+          if [ -f alerts_log.json ]; then git add alerts_log.json; fi
           git diff --cached --quiet || git commit -m "Update alert state [skip ci]"
           git push
