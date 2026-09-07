@@ -1,4 +1,3 @@
-
 """
 Partial-confluence progress tracking.
 
