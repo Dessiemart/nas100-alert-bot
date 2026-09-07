@@ -87,3 +87,18 @@ def pre_london_window(moment_utc: datetime) -> tuple[datetime, datetime]:
     if london_start < asian_end.astimezone(NY_TZ):
         london_start, london_end = LONDON.window_for_date(moment_ny.date() + timedelta(days=1))
     return asian_end, london_start.astimezone(ZoneInfo("UTC"))
+
+
+def is_weekend_market_closed(moment_utc: datetime) -> bool:
+    """Forex/CFD markets are closed from Friday 17:00 NY time until
+    Sunday 17:00 NY time. Used to skip runs (and API calls) entirely
+    over the weekend rather than fetching empty/stale candle data."""
+    moment_ny = moment_utc.astimezone(NY_TZ)
+    weekday = moment_ny.weekday()  # Monday=0 ... Sunday=6
+    if weekday == 5:  # Saturday
+        return True
+    if weekday == 4 and moment_ny.hour >= 17:  # Friday after 5pm NY
+        return True
+    if weekday == 6 and moment_ny.hour < 17:  # Sunday before 5pm NY
+        return True
+    return False
