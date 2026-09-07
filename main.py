@@ -40,6 +40,7 @@ from src.killzones import (
 from src.candles import utc_now
 from src.news_calendar import upcoming_high_impact_event
 from src.position_sizing import suggested_lot_size, format_size_note
+from src import telegram_bot
 
 
 def build_data_plan(now) -> list[tuple[str, str]]:
@@ -80,6 +81,8 @@ def load_state() -> dict:
     state.setdefault("last_heartbeat_ny_date", None)
     state.setdefault("alerts_today", 0)
     state.setdefault("near_miss_today", 0)
+    state.setdefault("telegram_offset", 0)
+    state.setdefault("menu_sent", False)
     return state
 
 
@@ -132,10 +135,43 @@ def maybe_send_heartbeat(state: dict) -> None:
     state["near_miss_today"] = 0
 
 
+def check_bot_commands(state: dict) -> None:
+    if not state["menu_sent"]:
+        telegram_bot.send_with_menu(
+            "👋 <b>Bot online.</b> Pick an option below any time - "
+            "replies may take a few minutes since I check every ~15 min."
+        )
+        state["menu_sent"] = True
+
+    updates = telegram_bot.get_updates(state["telegram_offset"] + 1)
+    for update in updates:
+        state["telegram_offset"] = update["update_id"]
+        text = update.get("message", {}).get("text", "").strip()
+
+        if text in ("/start", "/menu"):
+            telegram_bot.send_with_menu("👋 Here's the menu.")
+        elif text == "📊 My Outcome":
+            telegram_bot.send_with_menu(telegram_bot.build_outcome_summary())
+        elif text == "🆘 Support":
+            telegram_bot.send_with_menu(telegram_bot.support_text())
+        elif text == "📰 Fundamentals":
+            telegram_bot.send_with_menu(
+                "📰 Fundamentals by symbol isn't built yet - coming in the next phase."
+            )
+        elif text == "🤖 Ask AI":
+            telegram_bot.send_with_menu(
+                "🤖 AI analysis isn't wired up yet - coming once the AI API key is set up."
+            )
+
+
 def main() -> None:
     now = utc_now()
+    state = load_state()
+    check_bot_commands(state)
+
     if is_weekend_market_closed(now):
         print("[main] weekend - markets closed, skipping this run.")
+        save_state(state)
         return
 
     data_plan = build_data_plan(now)
@@ -147,7 +183,6 @@ def main() -> None:
     for (symbol, period), candles in data.items():
         print(f"[main] {symbol} {period}: {len(candles)} candles")
 
-    state = load_state()
     seen = set(state["seen_keys"])
     new_alerts = []
 
