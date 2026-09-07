@@ -1,8 +1,10 @@
 name: NAS100 Alert Bot
 
 on:
-  # schedule:
-  #   - cron: "*/5 * * * *"
+  schedule:
+    # Every 15 minutes - Twelve Data's free tier is credit-limited, so
+    # we check less often than the old cTrader version did.
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
 
 permissions:
@@ -27,20 +29,13 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
-          CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
-          CTRADER_REFRESH_TOKEN: ${{ secrets.CTRADER_REFRESH_TOKEN }}
-          CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
-          CTRADER_IS_LIVE: ${{ secrets.CTRADER_IS_LIVE }}
-          SYMBOL_ID_NAS100: ${{ secrets.SYMBOL_ID_NAS100 }}
-          SYMBOL_ID_XAUUSD: ${{ secrets.SYMBOL_ID_XAUUSD }}
-          SYMBOL_ID_EURUSD: ${{ secrets.SYMBOL_ID_EURUSD }}
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
         run: python main.py
 
       - name: Commit updated state
         run: |
           git config user.name "nas100-alert-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add state.json
+          git add state.json alerts_log.json
           git diff --cached --quiet || git commit -m "Update alert state [skip ci]"
           git push
