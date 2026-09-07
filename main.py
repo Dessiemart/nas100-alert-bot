@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from src.ctrader_client import fetch_all_trendbars
 from src.strategies import ALL_STRATEGIES
+from src.confluence import ALL_PROGRESS_CHECKERS
 from src.telegram_alert import send_telegram_message, format_alert
 
 # Every (symbol, period) pair any strategy might need. Strategies just
@@ -81,6 +82,30 @@ def main() -> None:
 
     if not new_alerts:
         print("[main] no new setups this run.")
+
+    # Partial-confluence heads-up: setups that are one step away from a
+    # full signal, even though they haven't fully confirmed yet.
+    new_progress = []
+    for checker_fn in ALL_PROGRESS_CHECKERS:
+        try:
+            checks = checker_fn(data)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[main] progress checker {checker_fn.__name__} raised: {exc}")
+            continue
+        for check in checks:
+            if not check.is_near_complete():
+                continue
+            if check.key in seen:
+                continue
+            new_progress.append(check)
+            seen.add(check.key)
+
+    for check in new_progress:
+        print(f"[main] sending near-miss: {check.key}")
+        send_telegram_message(check.format_message())
+
+    if not new_progress:
+        print("[main] no near-miss setups this run.")
 
     state["seen_keys"] = list(seen)
     save_state(state)
