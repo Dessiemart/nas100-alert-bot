@@ -27,6 +27,11 @@ MAIN_MENU = {
     "is_persistent": True,
 }
 
+SYMBOL_SUBMENU = {
+    "keyboard": [["NAS100", "XAUUSD"], ["EURUSD"], ["⬅️ Back"]],
+    "resize_keyboard": True,
+}
+
 
 def get_updates(offset: int) -> list:
     try:
@@ -46,7 +51,7 @@ def get_updates(offset: int) -> list:
         return []
 
 
-def send_with_menu(text: str) -> None:
+def _send(text: str, keyboard: dict) -> None:
     try:
         requests.post(
             f"{API_BASE}/sendMessage",
@@ -54,12 +59,20 @@ def send_with_menu(text: str) -> None:
                 "chat_id": config.TELEGRAM_CHAT_ID,
                 "text": text,
                 "parse_mode": "HTML",
-                "reply_markup": json.dumps(MAIN_MENU),
+                "reply_markup": json.dumps(keyboard),
             },
             timeout=15,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[bot] send_with_menu failed: {exc}")
+        print(f"[bot] send failed: {exc}")
+
+
+def send_with_menu(text: str) -> None:
+    _send(text, MAIN_MENU)
+
+
+def send_with_symbol_submenu(text: str) -> None:
+    _send(text, SYMBOL_SUBMENU)
 
 
 def build_outcome_summary() -> str:
