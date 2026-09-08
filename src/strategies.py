@@ -1,6 +1,6 @@
 """
 The five mechanical strategies, one function each. Every function takes
-the `data` dict produced by ctrader_client.fetch_all_trendbars (keyed by
+the `data` dict produced by fetching candles (keyed by
 (symbol, period_label) -> list[Candle]) and returns a list of Alert
 objects - empty if no valid setup exists right now.
 
