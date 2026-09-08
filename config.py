@@ -6,10 +6,14 @@ Actions injects from your repository Secrets. Nothing here is a real
 credential - it's all `os.environ[...]` lookups.
 
 Required GitHub Secrets (Settings -> Secrets and variables -> Actions):
-  TELEGRAM_BOT_TOKEN     - from BotFather
-  TELEGRAM_CHAT_ID       - your Telegram chat id
-  TWELVEDATA_API_KEY     - free key from twelvedata.com/register (no card,
-                           no approval wait - instant)
+  TELEGRAM_BOT_TOKEN       - from BotFather
+  TELEGRAM_CHAT_ID         - your Telegram chat id
+  TWELVEDATA_API_KEY       - free key from twelvedata.com/register (Gold + EURUSD)
+  CTRADER_CLIENT_ID        - MarketBot app Client ID (NAS100 only - Twelve
+  CTRADER_CLIENT_SECRET      Data's free plan doesn't include US indices)
+  CTRADER_REFRESH_TOKEN
+  CTRADER_ACCOUNT_ID
+  SYMBOL_ID_NAS100         - numeric symbolId for "US Tech 100 Index"
 """
 
 import os
@@ -29,38 +33,41 @@ def _env(name: str, required: bool = True, default: str = None) -> str:
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = _env("TELEGRAM_CHAT_ID")
 
-# ---- Twelve Data ----
+# ---- Twelve Data (Gold + EURUSD only - free plan lacks major US indices) ----
 TWELVEDATA_API_KEY = _env("TWELVEDATA_API_KEY")
-
-# Our internal symbol names -> Twelve Data's symbol strings.
-# FLAG FOR VERIFICATION: "NDX" is the standard Nasdaq-100 ticker used by
-# most data providers - very likely correct on Twelve Data too, but
-# worth a one-off test once you have your API key (see README).
 TWELVEDATA_SYMBOLS = {
-    "NAS100": "NDX",
     "XAUUSD": "XAU/USD",
     "EURUSD": "EUR/USD",
 }
 
+# ---- cTrader (NAS100 only) ----
+CTRADER_CLIENT_ID = _env("CTRADER_CLIENT_ID")
+CTRADER_CLIENT_SECRET = _env("CTRADER_CLIENT_SECRET")
+CTRADER_REFRESH_TOKEN = _env("CTRADER_REFRESH_TOKEN")
+CTRADER_ACCOUNT_ID = int(_env("CTRADER_ACCOUNT_ID"))
+CTRADER_SYMBOL_ID_NAS100 = int(_env("SYMBOL_ID_NAS100"))
+CTRADER_IS_LIVE = _env("CTRADER_IS_LIVE", required=False, default="false").lower() == "true"
+
 # ---- Account balance for position sizing ----
-# Twelve Data is market data only - it has no concept of your broker
-# account, so this is a plain number you maintain yourself (a future
-# bot command will let you update it without editing code).
+# Neither Twelve Data nor this scoped-down cTrader usage fetches a live
+# balance - this is a number you maintain yourself.
 ACCOUNT_BALANCE = 1000.0
 
 # ---- Assumed contract sizes (units per 1.0 lot) for position sizing ----
-# FLAG FOR VERIFICATION: these are industry-standard assumptions
-# (EURUSD 100,000 units/lot, XAUUSD 100 oz/lot are essentially universal;
-# NAS100 CFD contract size varies by broker - 1.0 here means "1 unit of
-# index per lot", i.e. $1 per point per lot, which is common but NOT
-# universal). Check your broker's actual contract specification page and
-# adjust NAS100 below if it differs, or position sizes will be wrong.
+# FLAG FOR VERIFICATION: EURUSD 100,000 units/lot and XAUUSD 100 oz/lot
+# are essentially universal; NAS100 CFD contract size varies by broker -
+# check Pepperstone's actual spec and adjust if it's not 1.0.
 ASSUMED_LOT_SIZE = {
     "NAS100": 1.0,
     "XAUUSD": 100.0,
     "EURUSD": 100000.0,
 }
 RISK_PERCENT = 0.05
+
+# All symbols the bot trades, regardless of data source - used by
+# strategies, confluence, position sizing, and the bot menu. Overridden
+# further down once settings.json is read.
+ALL_SYMBOLS = ["NAS100", "XAUUSD", "EURUSD"]
 
 # ---- SL buffers per strategy 4/5 ("newyork" / "newyork tt") ----
 NAS100_SL_BUFFER_POINTS = 5.0
@@ -116,3 +123,24 @@ ALERTS_LOG_MAX_ENTRIES = 2000
 # this - check usage on your Twelve Data dashboard for the first few
 # days and tell me if it's running close to the cap.
 TWELVEDATA_DAILY_CREDIT_BUDGET = 800
+
+# ---- Dashboard-controlled settings (settings.json, written by the web
+# dashboard via GitHub's API - overrides the defaults above if present).
+# Absence of the file is normal (nothing's been changed from the
+# dashboard yet) - defaults apply. Placed last so it can override
+# anything defined earlier in this file. ----
+import json as _json
+
+SETTINGS_FILE = "settings.json"
+if os.path.exists(SETTINGS_FILE):
+    try:
+        with open(SETTINGS_FILE) as _f:
+            _settings = _json.load(_f)
+        RISK_PERCENT = _settings.get("risk_percent", RISK_PERCENT)
+        ACCOUNT_BALANCE = _settings.get("account_balance", ACCOUNT_BALANCE)
+        NEWS_PAUSE_ENABLED = _settings.get("news_pause_enabled", NEWS_PAUSE_ENABLED)
+        _symbols_enabled = _settings.get("symbols_enabled", {})
+        # A symbol with no explicit "false" in settings.json stays enabled.
+        ALL_SYMBOLS = [s for s in ALL_SYMBOLS if _symbols_enabled.get(s, True)]
+    except (_json.JSONDecodeError, OSError) as _exc:
+        print(f"[config] could not read settings.json, using defaults: {_exc}")
