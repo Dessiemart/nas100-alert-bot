@@ -95,6 +95,16 @@ NEWS_PAUSE_BUFFER_MINUTES = 30
 NEWS_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 WATCHED_NEWS_CURRENCIES = ["USD"]
 
+# ---- Fundamentals feature ----
+# Which currencies' economic events matter for each symbol's fundamentals.
+FUNDAMENTALS_CURRENCIES_BY_SYMBOL = {
+    "NAS100": ["USD"],
+    "XAUUSD": ["USD"],
+    "EURUSD": ["USD", "EUR"],
+}
+# Currencies covered by the once-daily proactive digest message.
+DAILY_DIGEST_CURRENCIES = ["USD", "EUR"]
+
 # ---- Outcome logging (for later backtesting/review) ----
 ALERTS_LOG_FILE = "alerts_log.json"
 ALERTS_LOG_MAX_ENTRIES = 2000
