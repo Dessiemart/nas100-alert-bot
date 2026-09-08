@@ -38,7 +38,7 @@ from src.killzones import (
     NY_TZ, ASIAN, LONDON, NEW_YORK_AM, is_weekend_market_closed,
 )
 from src.candles import utc_now
-from src.news_calendar import upcoming_high_impact_event
+from src.news_calendar import upcoming_high_impact_event, build_symbol_fundamentals, build_daily_digest
 from src.position_sizing import suggested_lot_size, format_size_note
 from src import telegram_bot
 
@@ -83,6 +83,8 @@ def load_state() -> dict:
     state.setdefault("near_miss_today", 0)
     state.setdefault("telegram_offset", 0)
     state.setdefault("menu_sent", False)
+    state.setdefault("awaiting_fundamentals_symbol", False)
+    state.setdefault("last_fundamentals_digest_date", None)
     return state
 
 
@@ -148,6 +150,15 @@ def check_bot_commands(state: dict) -> None:
         state["telegram_offset"] = update["update_id"]
         text = update.get("message", {}).get("text", "").strip()
 
+        if state["awaiting_fundamentals_symbol"]:
+            state["awaiting_fundamentals_symbol"] = False
+            if text in config.TWELVEDATA_SYMBOLS:
+                summary = build_symbol_fundamentals(text, utc_now())
+                telegram_bot.send_with_menu(summary)
+            else:
+                telegram_bot.send_with_menu("Back to the main menu.")
+            continue
+
         if text in ("/start", "/menu"):
             telegram_bot.send_with_menu("👋 Here's the menu.")
         elif text == "📊 My Outcome":
@@ -155,13 +166,20 @@ def check_bot_commands(state: dict) -> None:
         elif text == "🆘 Support":
             telegram_bot.send_with_menu(telegram_bot.support_text())
         elif text == "📰 Fundamentals":
-            telegram_bot.send_with_menu(
-                "📰 Fundamentals by symbol isn't built yet - coming in the next phase."
-            )
+            state["awaiting_fundamentals_symbol"] = True
+            telegram_bot.send_with_symbol_submenu("Which symbol?")
         elif text == "🤖 Ask AI":
             telegram_bot.send_with_menu(
                 "🤖 AI analysis isn't wired up yet - coming once the AI API key is set up."
             )
+
+
+def maybe_send_daily_fundamentals(state: dict, now) -> None:
+    today_ny = now.astimezone(NY_TZ).date().isoformat()
+    if state.get("last_fundamentals_digest_date") == today_ny:
+        return
+    telegram_bot.send_with_menu(build_daily_digest(now))
+    state["last_fundamentals_digest_date"] = today_ny
 
 
 def main() -> None:
@@ -249,6 +267,7 @@ def main() -> None:
         print("[main] no near-miss setups this run.")
 
     maybe_send_heartbeat(state)
+    maybe_send_daily_fundamentals(state, now)
 
     state["seen_keys"] = list(seen)
     save_state(state)
