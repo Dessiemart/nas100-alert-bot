@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from src.twelvedata_client import fetch_market_data
+from src.ctrader_client import fetch_nas100_trendbars
 from src.strategies import ALL_STRATEGIES
 from src.confluence import ALL_PROGRESS_CHECKERS
 from src.telegram_alert import send_telegram_message, format_alert
@@ -38,16 +39,17 @@ from src.killzones import (
     NY_TZ, ASIAN, LONDON, NEW_YORK_AM, is_weekend_market_closed,
 )
 from src.candles import utc_now
-from src.news_calendar import upcoming_high_impact_event, build_symbol_fundamentals, build_daily_digest
-from src.position_sizing import suggested_lot_size, format_size_note
+from src.news_calendar import upcoming_high_impact_event, build_daily_digest
+from src.position_sizing import suggested_lot_size, format_size_note, SymbolSpec
 from src import telegram_bot
 
 
 def build_data_plan(now) -> list[tuple[str, str]]:
     """Trim which symbol/timeframe combos we fetch based on which
     killzone is currently relevant, to stay within Twelve Data's free
-    credit budget (see config.TWELVEDATA_DAILY_CREDIT_BUDGET)."""
-    plan = [("NAS100", "1H"), ("XAUUSD", "1H"), ("EURUSD", "1H")]  # always - cheap trend context
+    credit budget - and skip any symbol disabled from the dashboard
+    (config.ALL_SYMBOLS, sourced from settings.json)."""
+    plan = [(s, "1H") for s in ("NAS100", "XAUUSD", "EURUSD")]  # always - cheap trend context
 
     in_asian_or_grace = ASIAN.contains(now) or ASIAN.contains(now - timedelta(hours=3))
     in_london_or_grace = LONDON.contains(now) or LONDON.contains(now - timedelta(hours=1))
@@ -60,6 +62,8 @@ def build_data_plan(now) -> list[tuple[str, str]]:
                  ("XAUUSD", "5M"), ("XAUUSD", "15M"), ("XAUUSD", "30M")]
     if in_ny_am:
         plan += [("NAS100", "1M"), ("XAUUSD", "1M"), ("EURUSD", "1M")]
+
+    plan = [(symbol, period) for symbol, period in plan if symbol in config.ALL_SYMBOLS]
 
     # de-duplicate while preserving order
     seen = set()
@@ -81,9 +85,6 @@ def load_state() -> dict:
     state.setdefault("last_heartbeat_ny_date", None)
     state.setdefault("alerts_today", 0)
     state.setdefault("near_miss_today", 0)
-    state.setdefault("telegram_offset", 0)
-    state.setdefault("menu_sent", False)
-    state.setdefault("awaiting_fundamentals_symbol", False)
     state.setdefault("last_fundamentals_digest_date", None)
     return state
 
@@ -137,41 +138,16 @@ def maybe_send_heartbeat(state: dict) -> None:
     state["near_miss_today"] = 0
 
 
-def check_bot_commands(state: dict) -> None:
-    if not state["menu_sent"]:
-        telegram_bot.send_with_menu(
-            "👋 <b>Bot online.</b> Pick an option below any time - "
-            "replies may take a few minutes since I check every ~15 min."
-        )
-        state["menu_sent"] = True
 
-    updates = telegram_bot.get_updates(state["telegram_offset"] + 1)
-    for update in updates:
-        state["telegram_offset"] = update["update_id"]
-        text = update.get("message", {}).get("text", "").strip()
-
-        if state["awaiting_fundamentals_symbol"]:
-            state["awaiting_fundamentals_symbol"] = False
-            if text in config.TWELVEDATA_SYMBOLS:
-                summary = build_symbol_fundamentals(text, utc_now())
-                telegram_bot.send_with_menu(summary)
-            else:
-                telegram_bot.send_with_menu("Back to the main menu.")
-            continue
-
-        if text in ("/start", "/menu"):
-            telegram_bot.send_with_menu("👋 Here's the menu.")
-        elif text == "📊 My Outcome":
-            telegram_bot.send_with_menu(telegram_bot.build_outcome_summary())
-        elif text == "🆘 Support":
-            telegram_bot.send_with_menu(telegram_bot.support_text())
-        elif text == "📰 Fundamentals":
-            state["awaiting_fundamentals_symbol"] = True
-            telegram_bot.send_with_symbol_submenu("Which symbol?")
-        elif text == "🤖 Ask AI":
-            telegram_bot.send_with_menu(
-                "🤖 AI analysis isn't wired up yet - coming once the AI API key is set up."
-            )
+# NOTE: interactive button handling (My Outcome, Fundamentals, Ask AI,
+# Support) used to be polled here every ~15 min. That's now handled
+# INSTANTLY by the Apps Script webhook backend (Code.gs) instead -
+# Telegram pushes button taps there the moment they happen, rather
+# than this script needing to check for them. This Python bot now only
+# sends PROACTIVE messages (trading alerts, near-miss heads-ups, the
+# daily heartbeat, the daily fundamentals digest below) - all of which
+# work fine regardless of webhook mode, since they're outgoing sends,
+# not incoming update polling.
 
 
 def maybe_send_daily_fundamentals(state: dict, now) -> None:
@@ -185,7 +161,6 @@ def maybe_send_daily_fundamentals(state: dict, now) -> None:
 def main() -> None:
     now = utc_now()
     state = load_state()
-    check_bot_commands(state)
 
     if is_weekend_market_closed(now):
         print("[main] weekend - markets closed, skipping this run.")
@@ -193,11 +168,23 @@ def main() -> None:
         return
 
     data_plan = build_data_plan(now)
-    print(f"[main] fetching {len(data_plan)} symbol/timeframe combos from Twelve Data: {data_plan}")
-    market_data = fetch_market_data(data_plan)
-    data = market_data["trendbars"]
-    balance = market_data["balance"]
-    symbol_specs = market_data["symbols"]
+    nas100_periods = [period for symbol, period in data_plan if symbol == "NAS100"]
+    twelvedata_plan = [(symbol, period) for symbol, period in data_plan if symbol != "NAS100"]
+
+    print(f"[main] fetching NAS100 ({nas100_periods}) from cTrader, "
+          f"{twelvedata_plan} from Twelve Data")
+
+    market_data = fetch_market_data(twelvedata_plan)
+    data = dict(market_data["trendbars"])
+    symbol_specs = dict(market_data["symbols"])
+
+    nas100_data = fetch_nas100_trendbars(nas100_periods)
+    data.update(nas100_data)
+    symbol_specs["NAS100"] = SymbolSpec(
+        lot_size=config.ASSUMED_LOT_SIZE["NAS100"], min_volume=1, max_volume=10000000, step_volume=1,
+    )
+
+    balance = config.ACCOUNT_BALANCE
     for (symbol, period), candles in data.items():
         print(f"[main] {symbol} {period}: {len(candles)} candles")
 
