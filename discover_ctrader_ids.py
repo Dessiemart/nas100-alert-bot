@@ -7,6 +7,8 @@ the symbolId for anything matching NAS100 / US Tech 100 / NASDAQ 100.
 Run this ONCE via GitHub Actions (workflow_dispatch), read the printed
 values from the Actions log, then delete this script and the workflow
 file - it is not part of the permanent bot.
+
+Has a built-in 30-second timeout so it can never hang forever.
 """
 import os
 import sys
@@ -28,10 +30,27 @@ NAS100_KEYWORDS = ("NAS100", "US TECH 100", "USTECH100", "NASDAQ 100", "US100")
 
 client = Client(EndPoints.PROTOBUF_DEMO_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
 
+timeout_call = None  # set once reactor starts
+
+
+def stop_reactor():
+    if timeout_call is not None and timeout_call.active():
+        timeout_call.cancel()
+    if reactor.running:
+        reactor.stop()
+
+
+def on_timeout():
+    print("\nTIMED OUT after 30 seconds - no response from cTrader server.")
+    print("This usually means a request was sent but no reply ever arrived.")
+    print("Check that CLIENT_ID, CLIENT_SECRET and ACCESS_TOKEN secrets are correct.")
+    if reactor.running:
+        reactor.stop()
+
 
 def on_error(failure):
     print(f"ERROR: {failure}")
-    reactor.stop()
+    stop_reactor()
 
 
 def on_connected(_client):
@@ -43,7 +62,14 @@ def on_connected(_client):
     deferred.addCallbacks(on_app_auth, on_error)
 
 
-def on_app_auth(_result):
+def on_app_auth(result):
+    response = Protobuf.extract(result)
+    if response.__class__.__name__ == "ProtoOAErrorRes":
+        print(f"\nAPP AUTH REJECTED:")
+        print(f"  errorCode = {response.errorCode}")
+        print(f"  description = {response.description}")
+        stop_reactor()
+        return
     print("App authenticated. Fetching account list...")
     request = ProtoOAGetAccountListByAccessTokenReq()
     request.accessToken = ACCESS_TOKEN
@@ -53,10 +79,16 @@ def on_app_auth(_result):
 
 def on_accounts(result):
     response = Protobuf.extract(result)
+    if response.__class__.__name__ == "ProtoOAErrorRes":
+        print(f"\nSERVER REJECTED THE REQUEST:")
+        print(f"  errorCode = {response.errorCode}")
+        print(f"  description = {response.description}")
+        stop_reactor()
+        return
     accounts = list(response.ctidTraderAccount)
     if not accounts:
         print("No accounts found for this access token.")
-        reactor.stop()
+        stop_reactor()
         return
 
     print("\n=== ACCOUNTS FOUND ===")
@@ -76,7 +108,14 @@ def on_accounts(result):
     deferred.addCallbacks(lambda r: on_account_auth(r, target.ctidTraderAccountId), on_error)
 
 
-def on_account_auth(_result, account_id):
+def on_account_auth(result, account_id):
+    response = Protobuf.extract(result)
+    if response.__class__.__name__ == "ProtoOAErrorRes":
+        print(f"\nACCOUNT AUTH REJECTED:")
+        print(f"  errorCode = {response.errorCode}")
+        print(f"  description = {response.description}")
+        stop_reactor()
+        return
     print("Account authorized. Fetching symbol list (this can take a few seconds)...")
     request = ProtoOASymbolsListReq()
     request.ctidTraderAccountId = account_id
@@ -100,7 +139,7 @@ def on_symbols(result):
             print(f"    symbolId = {sym.symbolId}   name = \"{sym.symbolName}\"")
     print("================================\n")
     print("DONE. Copy the correct ctidTraderAccountId and symbolId values above.")
-    reactor.stop()
+    stop_reactor()
 
 
 def on_disconnected(_client, reason):
@@ -110,4 +149,6 @@ def on_disconnected(_client, reason):
 client.setConnectedCallback(on_connected)
 client.setDisconnectedCallback(on_disconnected)
 client.startService()
+
+timeout_call = reactor.callLater(30, on_timeout)
 reactor.run()
