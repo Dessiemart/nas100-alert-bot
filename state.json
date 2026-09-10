@@ -1,1 +1,1 @@
-{"seen_keys": [], "last_heartbeat_ny_date": "2026-09-10", "alerts_today": 0, "near_miss_today": 0, "telegram_offset": 147416660, "menu_sent": true, "awaiting_fundamentals_symbol": false, "last_fundamentals_digest_date": "2026-09-10"}
+{"seen_keys": ["progress|newyork tt|EURUSD|buy|4of5", "progress|newyork tt|XAUUSD|unknown|1of5"], "last_heartbeat_ny_date": "2026-09-10", "alerts_today": 0, "near_miss_today": 2, "telegram_offset": 147416660, "menu_sent": true, "awaiting_fundamentals_symbol": false, "last_fundamentals_digest_date": "2026-09-10"}
