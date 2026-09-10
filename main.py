@@ -238,8 +238,8 @@ def main() -> None:
             print(f"[main] progress checker {checker_fn.__name__} raised: {exc}")
             continue
         for check in checks:
-            if not check.is_near_complete():
-                continue
+            if check.confirmed == 0:
+                continue  # nothing confirmed yet - not worth a message
             if check.key in seen:
                 continue
             new_progress.append(check)
