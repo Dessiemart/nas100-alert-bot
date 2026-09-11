@@ -1,16 +1,24 @@
 """
 cTrader Open API client - used ONLY for NAS100 now, since Twelve Data's
-free plan doesn't include major US indices (confirmed empty result on
-both NDX and IXIC). Gold and EURUSD stay on Twelve Data, which works
-fine for them. This keeps the OAuth complexity scoped to just the one
-symbol that actually needs it.
+free plan doesn't include major US indices. Gold and EURUSD stay on
+Twelve Data.
 
-Much simpler than the original version: no account balance or symbol
-spec fetching needed here (position sizing uses config.ACCOUNT_BALANCE
-and config.ASSUMED_LOT_SIZE regardless of data source) - this only
-fetches trendbars.
+UPDATED: cTrader rotates the refresh token every time it's used to get
+a new access token - the OLD refresh token becomes invalid the moment
+you use it. This was previously being thrown away, which meant the
+saved CTRADER_REFRESH_TOKEN secret went stale after the very first
+scheduled run, and every run after that silently failed (caught,
+logged, returned empty data - never crashed, never alerted you).
+
+Now: after every refresh, the NEW access token and NEW refresh token
+are both pushed straight back to this repo's GitHub Secrets via the
+API, so the saved values are always the current ones. If that push
+fails for any reason, we still use the freshly-refreshed token for
+THIS run (so NAS100 data still comes through today), but flag the
+failure clearly in the log since next run will fail without it.
 """
 
+import os
 import time as time_module
 from datetime import datetime, timezone
 
@@ -26,8 +34,12 @@ from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbarPe
 
 import config
 from src.candles import Candle, raw_trendbar_to_candle
+from src import secret_updater
 
 TOKEN_URL = "https://openapi.ctrader.com/apps/token"
+
+GITHUB_OWNER = "Dessiemart"
+GITHUB_REPO = "nas100-alert-bot"
 
 PERIOD_MAP = {
     "1M": ProtoOATrendbarPeriod.M1,
@@ -48,6 +60,10 @@ LOOKBACK_MINUTES = {
 
 
 def refresh_access_token() -> str:
+    """Exchanges the current refresh token for a fresh access token,
+    then immediately pushes BOTH the new access token and the new
+    (rotated) refresh token back to GitHub Secrets so next run has a
+    working refresh token too."""
     resp = requests.get(
         TOKEN_URL,
         params={
@@ -61,9 +77,33 @@ def refresh_access_token() -> str:
     )
     resp.raise_for_status()
     data = resp.json()
-    if "accessToken" not in data and "access_token" not in data:
+
+    access_token = data.get("accessToken") or data.get("access_token")
+    new_refresh_token = data.get("refreshToken") or data.get("refresh_token")
+
+    if not access_token:
         raise RuntimeError(f"Unexpected token response: {data}")
-    return data.get("accessToken") or data.get("access_token")
+
+    if new_refresh_token and new_refresh_token != config.CTRADER_REFRESH_TOKEN:
+        gh_pat = os.environ.get("GH_PAT_FOR_SECRETS")
+        if not gh_pat:
+            print("[ctrader] WARNING: refresh token rotated but GH_PAT_FOR_SECRETS is not set - "
+                  "cannot persist it. NEXT run will fail unless you update the secret manually.")
+        else:
+            try:
+                secret_updater.update_repo_secret(
+                    GITHUB_OWNER, GITHUB_REPO, gh_pat, "CTRADER_ACCESS_TOKEN", access_token,
+                )
+                secret_updater.update_repo_secret(
+                    GITHUB_OWNER, GITHUB_REPO, gh_pat, "CTRADER_REFRESH_TOKEN", new_refresh_token,
+                )
+                print("[ctrader] Rotated tokens persisted to GitHub Secrets successfully.")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ctrader] WARNING: failed to persist rotated tokens: {exc}. "
+                      f"NEXT run will fail unless you update CTRADER_ACCESS_TOKEN/"
+                      f"CTRADER_REFRESH_TOKEN secrets manually with the values from this run.")
+
+    return access_token
 
 
 def fetch_nas100_trendbars(period_labels: list) -> dict:
