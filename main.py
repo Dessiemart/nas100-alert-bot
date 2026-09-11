@@ -56,10 +56,13 @@ def build_data_plan(now) -> list[tuple[str, str]]:
     in_ny_am = NEW_YORK_AM.contains(now)
 
     if in_asian_or_grace:
-        plan += [("NAS100", "5M"), ("NAS100", "15M")]
+        plan += [("NAS100", "5M"), ("NAS100", "15M"),
+                 ("XAUUSD", "5M"), ("XAUUSD", "15M"),
+                 ("EURUSD", "5M"), ("EURUSD", "15M")]
     if in_london_or_grace:
         plan += [("NAS100", "5M"), ("NAS100", "15M"), ("NAS100", "30M"),
-                 ("XAUUSD", "5M"), ("XAUUSD", "15M"), ("XAUUSD", "30M")]
+                 ("XAUUSD", "5M"), ("XAUUSD", "15M"), ("XAUUSD", "30M"),
+                 ("EURUSD", "5M"), ("EURUSD", "15M"), ("EURUSD", "30M")]
     if in_ny_am:
         plan += [("NAS100", "1M"), ("XAUUSD", "1M"), ("EURUSD", "1M")]
 
