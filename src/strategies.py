@@ -1,24 +1,15 @@
 """
 The five mechanical strategies, one function each. Every function takes
-the `data` dict produced by fetching candles (keyed by
+the `data` dict produced by twelvedata_client.fetch_market_data (keyed by
 (symbol, period_label) -> list[Candle]) and returns a list of Alert
 objects - empty if no valid setup exists right now.
 
-Each function is a direct translation of the plain-English rules we
-locked in while defining the strategy (see /areas/nasdaq-alert-system.md).
-Two honest gaps, flagged rather than silently guessed at:
-
-  1. "Asians" never had explicit SL/TP rules defined in our conversation
-     - only the entry trigger was formalized. This code uses a sensible
-     default (SL beyond the zone that triggered entry, TP at 2R) marked
-     clearly below. Revisit this if you want different SL/TP handling.
-  2. All "reaction candle" and "zone tap" checks scan forward from the
-     triggering event using the candle data available in a single fetch
-     window - if a setup's trigger candle has already scrolled out of the
-     fetched window by the time a run happens, it will be missed. This is
-     a v1 tradeoff for staying inside GitHub Actions' free short-run
-     budget; the backtesting stage (Stage 13) is exactly where this gets
-     tuned.
+UPDATED: "Asians", "Asian tt", and "London tt" now run on all three
+watched symbols (NAS100, XAUUSD, EURUSD) instead of their original
+narrower scope, since none of their rules are actually NAS100/Gold
+specific - they were just never turned on for every symbol. "newyork"
+and "newyork tt" together already covered all three symbols, so those
+are unchanged.
 """
 
 from dataclasses import dataclass, field
@@ -29,16 +20,16 @@ from src.candles import (
     Candle, Direction, find_swings, last_swing_before, find_fvgs, mark_mitigated,
     unmitigated_fvg_in_range, find_order_block, detect_ifvg, structure_trend, utc_now,
 )
-from src.killzones import ASIAN, LONDON, NEW_YORK_AM, pre_london_window
+from src.killzones import ASIAN, LONDON, NEW_YORK_AM, NY_TZ, pre_london_window
 
 
 @dataclass
 class Alert:
-    key: str            # unique id for dedup across runs
+    key: str
     strategy: str
     symbol: str
-    direction: str       # "buy" or "sell"
-    entry_type: str      # "market", "limit", "buy-stop", "sell-stop"
+    direction: str
+    entry_type: str
     entry: float
     sl: float
     tp: float
@@ -46,8 +37,6 @@ class Alert:
 
 
 def _close_beyond(candles: list[Candle], level: float, from_index: int, direction: Direction) -> int | None:
-    """First index >= from_index whose CLOSE breaks beyond `level` in the
-    given direction. Wicks don't count."""
     for i in range(from_index, len(candles)):
         c = candles[i]
         if direction == Direction.BULLISH and c.close > level:
@@ -75,12 +64,21 @@ def _reaction_candle(candles: list[Candle], from_index: int, direction: Directio
     return None
 
 
+ALL_SYMBOLS = ("NAS100", "XAUUSD", "EURUSD")
+
+
 # ---------------------------------------------------------------------------
-# 1. "Asians" - Asian killzone sweep + 1H trend continuation/reversal (NAS100)
+# 1. "Asians" (now runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def asians_strategy(data: dict) -> list[Alert]:
-    symbol = "NAS100"
+    alerts: list[Alert] = []
+    for symbol in ALL_SYMBOLS:
+        alerts += _asians_for_symbol(symbol, data)
+    return alerts
+
+
+def _asians_for_symbol(symbol: str, data: dict) -> list[Alert]:
     c5 = data.get((symbol, "5M"), [])
     c15 = data.get((symbol, "15M"), [])
     c1h = data.get((symbol, "1H"), [])
@@ -131,7 +129,6 @@ def asians_strategy(data: dict) -> list[Alert]:
 
 
 def _asians_continuation(symbol, working, sweep_idx, direction: Direction, swept_level) -> Alert | None:
-    # 5M BOS in trend direction: close beyond most recent opposite swing
     bos_idx = None
     for i in range(sweep_idx + 1, len(working)):
         swings = find_swings(working[: i + 1], width=1)
@@ -180,7 +177,6 @@ def _asians_continuation(symbol, working, sweep_idx, direction: Direction, swept
 
 
 def _asians_reversal(symbol, c15, working, sweep_idx, direction: Direction, swept_level, swept_is_high) -> Alert | None:
-    # 15M FVG/OB above/below the swept area
     fvgs_15 = find_fvgs(c15)
     mark_mitigated(fvgs_15, c15)
     zone_direction = Direction.BEARISH if swept_is_high else Direction.BULLISH
@@ -189,7 +185,6 @@ def _asians_reversal(symbol, c15, working, sweep_idx, direction: Direction, swep
         return None
     zone = candidate_zones[-1]
 
-    # 5M CHoCH: close beyond the swing that supported the sweep
     swings = find_swings(working[: sweep_idx + 1], width=1)
     ref_swing = last_swing_before(swings, sweep_idx, is_high=not swept_is_high)
     if ref_swing is None:
@@ -224,12 +219,12 @@ def _asians_reversal(symbol, c15, working, sweep_idx, direction: Direction, swep
 
 
 # ---------------------------------------------------------------------------
-# 2. "London tt" - Pre-London Pullback -> London Continuation (NAS100 + Gold)
+# 2. "London tt" (now runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def london_tt_strategy(data: dict) -> list[Alert]:
     alerts: list[Alert] = []
-    for symbol in ("NAS100", "XAUUSD"):
+    for symbol in ALL_SYMBOLS:
         c15 = data.get((symbol, "15M"), [])
         c30 = data.get((symbol, "30M"), [])
         c1h = data.get((symbol, "1H"), [])
@@ -267,9 +262,8 @@ def london_tt_strategy(data: dict) -> list[Alert]:
             pullback_size = pullback_extreme - asian_low
 
         if pullback_size < config.LONDON_TT_MIN_PULLBACK_PCT * asian_range:
-            continue  # pullback too shallow
+            continue
 
-        # Confirmation candles at/after London killzone start
         london_15 = [c for c in c15 if c.time >= pre_london_end]
         london_30 = [c for c in c30 if c.time >= pre_london_end]
         london_1h = [c for c in c1h if c.time >= pre_london_end] if c1h else []
@@ -296,7 +290,7 @@ def london_tt_strategy(data: dict) -> list[Alert]:
         entry = confirm_15.high if direction == Direction.BULLISH else confirm_15.low
         sl = confirm_15.low if direction == Direction.BULLISH else confirm_15.high
         risk = abs(entry - sl)
-        tp = entry + risk if direction == Direction.BULLISH else entry - risk  # 1:1 minimum
+        tp = entry + risk if direction == Direction.BULLISH else entry - risk
 
         alerts.append(Alert(
             key=f"london_tt|{symbol}|{confirm_15.time.isoformat()}",
@@ -311,11 +305,17 @@ def london_tt_strategy(data: dict) -> list[Alert]:
 
 
 # ---------------------------------------------------------------------------
-# 3. "Asian tt" - Asian Sweep -> CHOCH -> 50% FVG entry (NAS100)
+# 3. "Asian tt" (now runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def asian_tt_strategy(data: dict) -> list[Alert]:
-    symbol = "NAS100"
+    alerts: list[Alert] = []
+    for symbol in ALL_SYMBOLS:
+        alerts += _asian_tt_for_symbol(symbol, data)
+    return alerts
+
+
+def _asian_tt_for_symbol(symbol: str, data: dict) -> list[Alert]:
     c5 = data.get((symbol, "5M"), [])
     if not c5:
         return []
@@ -362,7 +362,6 @@ def asian_tt_strategy(data: dict) -> list[Alert]:
     if not results:
         return []
 
-    # If both sides confirmed, only take whichever CHOCH happened first.
     results.sort(key=lambda r: r[0])
     choch_idx, direction, gap, ref_swing, opposite_extreme_level = results[0]
 
@@ -382,7 +381,7 @@ def asian_tt_strategy(data: dict) -> list[Alert]:
 
 
 # ---------------------------------------------------------------------------
-# 4 & 5. "newyork" / "newyork tt" - 9 AM Candle Range Model
+# 4 & 5. "newyork" / "newyork tt" (unchanged - already covers all 3 symbols)
 # ---------------------------------------------------------------------------
 
 def _newyork_cr(symbol: str, data: dict, sl_buffer: float) -> list[Alert]:
@@ -394,11 +393,10 @@ def _newyork_cr(symbol: str, data: dict, sl_buffer: float) -> list[Alert]:
     now = utc_now()
     ny_start, ny_end = NEW_YORK_AM.current_or_most_recent_window(now)
     if now >= ny_end:
-        return []  # NY AM killzone already over - setup expired
+        return []
 
-    # the 8:00 AM NY-time hourly candle
     eight_am_candle = next(
-        (c for c in c1h if c.time.astimezone(__import__("src.killzones", fromlist=["NY_TZ"]).NY_TZ).hour == 8),
+        (c for c in c1h if c.time.astimezone(NY_TZ).hour == 8),
         None,
     )
     if eight_am_candle is None:
@@ -411,15 +409,14 @@ def _newyork_cr(symbol: str, data: dict, sl_buffer: float) -> list[Alert]:
     next_hour = later_1h[0]
 
     if next_hour.close > range_high:
-        direction = Direction.BEARISH  # high taken -> reversal short
+        direction = Direction.BEARISH
         take_level = range_high
     elif next_hour.close < range_low:
-        direction = Direction.BULLISH  # low taken -> reversal long
+        direction = Direction.BULLISH
         take_level = range_low
     else:
-        return []  # neither side closed beyond the range yet
+        return []
 
-    # Work on 1M candles from the break onward
     working = [c for c in c1m if c.time >= next_hour.time]
     if len(working) < 3:
         return []
