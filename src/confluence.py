@@ -1,19 +1,9 @@
 """
 Partial-confluence progress tracking.
 
-For each strategy, this breaks the entry conditions into an ordered
-checklist and reports progress even when the full setup hasn't confirmed
-yet - so you get a heads-up like "4/5 confluences met, waiting on the
-reaction candle" instead of only hearing about it once it's already a
-complete, tradeable signal.
-
-This intentionally re-derives each strategy's logic step by step rather
-than reusing the strategy functions directly, because those functions
-stop (return None) at the first failed check - exactly what we don't
-want here, since the whole point is seeing how far a setup has gotten.
-Some approximation is used for the more branchy rules (e.g. 'London tt'
-weak-candle exception) - full precision is reserved for the real alert
-in src/strategies.py; this is a heads-up, not the trigger itself.
+UPDATED: "Asians", "Asian tt", and "London tt" progress checkers now run
+on all three watched symbols (NAS100, XAUUSD, EURUSD), matching the same
+change made in src/strategies.py.
 """
 
 from dataclasses import dataclass, field
@@ -24,16 +14,16 @@ from src.candles import (
     unmitigated_fvg_in_range, find_order_block, detect_ifvg, structure_trend, utc_now,
 )
 from src.killzones import ASIAN, NEW_YORK_AM, NY_TZ, pre_london_window
-from src.strategies import _close_beyond, _zone_tap, _reaction_candle
+from src.strategies import _close_beyond, _zone_tap, _reaction_candle, ALL_SYMBOLS
 
 
 @dataclass
 class ConfluenceCheck:
     strategy: str
     symbol: str
-    direction: str  # "buy", "sell", or "unknown"
+    direction: str
     step_names: list
-    step_results: list  # same length as step_names, in order
+    step_results: list
 
     @property
     def total(self) -> int:
@@ -52,21 +42,27 @@ class ConfluenceCheck:
         return 0 < missing <= config.NEAR_MISS_MAX_MISSING
 
     def format_message(self) -> str:
-        lines = [f"🟡 <b>{self.confirmed}/{self.total} confluences</b> — {self.symbol} ({self.strategy})"]
+        lines = [f"\U0001f7e1 <b>{self.confirmed}/{self.total} confluences</b> \u2014 {self.symbol} ({self.strategy})"]
         if self.direction != "unknown":
             lines.append(f"Leaning: {'BUY' if self.direction == 'buy' else 'SELL'}")
         for name, ok in zip(self.step_names, self.step_results):
-            lines.append(f"{'✅' if ok else '⏳'} {name}")
-        lines.append("⚠️ Not a full setup yet — this is a heads-up, not an entry signal.")
+            lines.append(f"{'\u2705' if ok else '\u23f3'} {name}")
+        lines.append("\u26a0\ufe0f Not a full setup yet \u2014 this is a heads-up, not an entry signal.")
         return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# 1. "Asians"
+# 1. "Asians" (now runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def check_asians_progress(data: dict) -> list[ConfluenceCheck]:
-    symbol = "NAS100"
+    results: list[ConfluenceCheck] = []
+    for symbol in ALL_SYMBOLS:
+        results += _check_asians_progress_for_symbol(symbol, data)
+    return results
+
+
+def _check_asians_progress_for_symbol(symbol: str, data: dict) -> list[ConfluenceCheck]:
     c5 = data.get((symbol, "5M"), [])
     c15 = data.get((symbol, "15M"), [])
     c1h = data.get((symbol, "1H"), [])
@@ -150,7 +146,7 @@ def check_asians_progress(data: dict) -> list[ConfluenceCheck]:
 
             results.append(ConfluenceCheck("Asians (continuation)", symbol, dir_label, names, r))
 
-        else:  # reversal
+        else:
             names = ["Asian high/low swept", "1H trend disagrees (reversal)", "15M FVG/OB zone found",
                      "5M CHoCH (close beyond swing)", "Zone tapped", "Reaction candle closed"]
             r = [swept, swept]
@@ -186,12 +182,12 @@ def check_asians_progress(data: dict) -> list[ConfluenceCheck]:
 
 
 # ---------------------------------------------------------------------------
-# 2. "London tt"
+# 2. "London tt" (now runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def check_london_tt_progress(data: dict) -> list[ConfluenceCheck]:
     results = []
-    for symbol in ("NAS100", "XAUUSD"):
+    for symbol in ALL_SYMBOLS:
         c15 = data.get((symbol, "15M"), [])
         c30 = data.get((symbol, "30M"), [])
         c5 = data.get((symbol, "5M"), [])
@@ -255,11 +251,17 @@ def check_london_tt_progress(data: dict) -> list[ConfluenceCheck]:
 
 
 # ---------------------------------------------------------------------------
-# 3. "Asian tt"
+# 3. "Asian tt" (now runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def check_asian_tt_progress(data: dict) -> list[ConfluenceCheck]:
-    symbol = "NAS100"
+    results: list[ConfluenceCheck] = []
+    for symbol in ALL_SYMBOLS:
+        results += _check_asian_tt_progress_for_symbol(symbol, data)
+    return results
+
+
+def _check_asian_tt_progress_for_symbol(symbol: str, data: dict) -> list[ConfluenceCheck]:
     c5 = data.get((symbol, "5M"), [])
     if not c5:
         return []
@@ -314,7 +316,7 @@ def check_asian_tt_progress(data: dict) -> list[ConfluenceCheck]:
 
 
 # ---------------------------------------------------------------------------
-# 4 & 5. "newyork" / "newyork tt"
+# 4 & 5. "newyork" / "newyork tt" (unchanged - already covers all 3 symbols)
 # ---------------------------------------------------------------------------
 
 def _newyork_progress(symbol: str, data: dict) -> list[ConfluenceCheck]:
@@ -329,7 +331,7 @@ def _newyork_progress(symbol: str, data: dict) -> list[ConfluenceCheck]:
     now = utc_now()
     ny_start, ny_end = NEW_YORK_AM.current_or_most_recent_window(now)
     if now >= ny_end:
-        return []  # killzone over - stale, not worth reporting
+        return []
 
     r = [False, False, False, False, False]
     eight_am_candle = next((c for c in c1h if c.time.astimezone(NY_TZ).hour == 8), None)
