@@ -10,28 +10,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check secrets are wired up
-        env:
-          T1: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          T2: ${{ secrets.TELEGRAM_CHAT_ID }}
-          C1: ${{ secrets.CTRADER_CLIENT_ID }}
-          C2: ${{ secrets.CTRADER_CLIENT_SECRET }}
-          C3: ${{ secrets.CTRADER_ACCESS_TOKEN }}
-        run: |
-          echo "## Secret Wiring Check" >> "$GITHUB_STEP_SUMMARY"
-          check() {
-            if [ -z "$2" ]; then
-              echo "❌ $1 — NOT reaching this workflow" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "✅ $1 — present (length ${#2})" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          }
-          check "TELEGRAM_BOT_TOKEN" "$T1"
-          check "TELEGRAM_CHAT_ID" "$T2"
-          check "CTRADER_CLIENT_ID" "$C1"
-          check "CTRADER_CLIENT_SECRET" "$C2"
-          check "CTRADER_ACCESS_TOKEN" "$C3"
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -44,7 +22,7 @@ jobs:
         env:
           CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
           CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
-          CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
+          CTRADER_REFRESH_TOKEN: ${{ secrets.CTRADER_REFRESH_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python discover_ctrader_ids.py
