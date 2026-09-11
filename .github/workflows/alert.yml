@@ -35,6 +35,7 @@ jobs:
           CTRADER_REFRESH_TOKEN: ${{ secrets.CTRADER_REFRESH_TOKEN }}
           CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
           SYMBOL_ID_NAS100: ${{ secrets.CTRADER_SYMBOL_ID_NAS100 }}
+          GH_PAT_FOR_SECRETS: ${{ secrets.GH_PAT_FOR_SECRETS }}
         run: python main.py
 
       - name: Commit updated state
