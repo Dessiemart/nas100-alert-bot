@@ -1,24 +1,27 @@
 """
 One-time discovery script.
-Connects to cTrader's Open API over TCP, lists your trading accounts,
-authorizes the first (demo) account, then lists its symbols and looks
-for anything matching NAS100, Gold (XAUUSD), or EUR/USD.
+Connects to cTrader's Open API over TCP, refreshes the access token
+using the saved refresh token, lists your trading accounts, authorizes
+the first (demo) account, then lists its symbols and looks for anything
+matching NAS100, Gold (XAUUSD), or EUR/USD.
 
-UPDATED: now also searches for Gold/EUR (not just NAS100), and instead
-of only printing to the Actions log, it sends the results straight to
-your Telegram - no log-reading needed.
+UPDATED: now refreshes the access token first (via ProtoOARefreshTokenReq)
+instead of relying on the possibly-expired CTRADER_ACCESS_TOKEN secret.
+IMPORTANT: cTrader rotates the refresh token every time it's used - the
+new access token AND new refresh token are both sent via Telegram, and
+BOTH secrets need updating after this runs.
 
 Run this ONCE via GitHub Actions (workflow_dispatch). Has a built-in
 30-second timeout so it can never hang forever.
 """
 import os
-import sys
 
 import requests
 from twisted.internet import reactor
 from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAApplicationAuthReq,
+    ProtoOARefreshTokenReq,
     ProtoOAGetAccountListByAccessTokenReq,
     ProtoOAAccountAuthReq,
     ProtoOASymbolsListReq,
@@ -26,7 +29,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
 
 CLIENT_ID = os.environ["CTRADER_CLIENT_ID"]
 CLIENT_SECRET = os.environ["CTRADER_CLIENT_SECRET"]
-ACCESS_TOKEN = os.environ["CTRADER_ACCESS_TOKEN"]
+REFRESH_TOKEN = os.environ["CTRADER_REFRESH_TOKEN"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
@@ -39,6 +42,7 @@ KEYWORD_GROUPS = {
 client = Client(EndPoints.PROTOBUF_DEMO_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
 
 timeout_call = None
+current_access_token = None
 
 
 def send_telegram(text: str):
@@ -60,7 +64,7 @@ def stop_reactor():
 
 
 def on_timeout():
-    msg = "🔴 Symbol discovery TIMED OUT after 30s - no response from cTrader server. Check CLIENT_ID/CLIENT_SECRET/ACCESS_TOKEN secrets."
+    msg = "🔴 Symbol discovery TIMED OUT after 30s - no response from cTrader server."
     print(msg)
     send_telegram(msg)
     if reactor.running:
@@ -91,9 +95,35 @@ def on_app_auth(result):
         send_telegram(msg)
         stop_reactor()
         return
-    print("App authenticated. Fetching account list...")
+    print("App authenticated. Refreshing access token...")
+    request = ProtoOARefreshTokenReq()
+    request.refreshToken = REFRESH_TOKEN
+    deferred = client.send(request)
+    deferred.addCallbacks(on_refresh, on_error)
+
+
+def on_refresh(result):
+    global current_access_token
+    response = Protobuf.extract(result)
+    if response.__class__.__name__ == "ProtoOAErrorRes":
+        msg = f"🔴 TOKEN REFRESH REJECTED: {response.errorCode} - {response.description}\nYour saved CTRADER_REFRESH_TOKEN secret is likely stale too - you may need the full browser OAuth flow again."
+        print(msg)
+        send_telegram(msg)
+        stop_reactor()
+        return
+
+    current_access_token = response.accessToken
+    new_refresh_token = response.refreshToken
+    print("Token refreshed successfully.")
+    send_telegram(
+        "🔑 <b>cTrader token refreshed</b>\n\n"
+        f"New CTRADER_ACCESS_TOKEN:\n<code>{current_access_token}</code>\n\n"
+        f"New CTRADER_REFRESH_TOKEN:\n<code>{new_refresh_token}</code>\n\n"
+        "⚠️ Update BOTH secrets on GitHub now - the old refresh token is now invalid."
+    )
+
     request = ProtoOAGetAccountListByAccessTokenReq()
-    request.accessToken = ACCESS_TOKEN
+    request.accessToken = current_access_token
     deferred = client.send(request)
     deferred.addCallbacks(on_accounts, on_error)
 
@@ -119,7 +149,7 @@ def on_accounts(result):
 
     request = ProtoOAAccountAuthReq()
     request.ctidTraderAccountId = target.ctidTraderAccountId
-    request.accessToken = ACCESS_TOKEN
+    request.accessToken = current_access_token
     deferred = client.send(request)
     deferred.addCallbacks(lambda r: on_account_auth(r, target.ctidTraderAccountId), on_error)
 
