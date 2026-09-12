@@ -1,0 +1,10 @@
+{
+  "risk_percent": 0.05,
+  "account_balance": 1000,
+  "symbols_enabled": {
+    "NAS100": true,
+    "XAUUSD": true,
+    "EURUSD": true
+  },
+  "news_pause_enabled": true
+}
