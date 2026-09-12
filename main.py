@@ -3,7 +3,8 @@ Entry point. Run by GitHub Actions on a schedule.
 
 Flow:
   0. Skip entirely if it's the weekend (markets closed) - saves API
-     credits and Actions minutes.
+     credits and Actions minutes. Can be overridden for manual testing
+     via the FORCE_RUN_WEEKEND env var.
   1. Work out which symbol/timeframe combos are actually worth fetching
      right now (see build_data_plan) - Twelve Data's free tier is
      credit-limited, so we only pull extra timeframes during the
@@ -141,7 +142,6 @@ def maybe_send_heartbeat(state: dict) -> None:
     state["near_miss_today"] = 0
 
 
-
 # NOTE: interactive button handling (My Outcome, Fundamentals, Ask AI,
 # Support) used to be polled here every ~15 min. That's now handled
 # INSTANTLY by the Apps Script webhook backend (Code.gs) instead -
@@ -165,10 +165,13 @@ def main() -> None:
     now = utc_now()
     state = load_state()
 
-    if is_weekend_market_closed(now):
+    force_run = os.environ.get("FORCE_RUN_WEEKEND") == "true"
+    if is_weekend_market_closed(now) and not force_run:
         print("[main] weekend - markets closed, skipping this run.")
         save_state(state)
         return
+    if is_weekend_market_closed(now) and force_run:
+        print("[main] weekend override active - proceeding anyway for testing.")
 
     data_plan = build_data_plan(now)
     nas100_periods = [period for symbol, period in data_plan if symbol == "NAS100"]
