@@ -5,7 +5,12 @@ on:
     # Every 15 minutes - Twelve Data's free tier is credit-limited, so
     # we check less often than the old cTrader version did.
     - cron: "*/15 * * * *"
-  workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      force_run_weekend:
+        description: 'Bypass weekend check (testing only)'
+        required: false
+        default: 'false'
 
 permissions:
   contents: write  # needed so the workflow can commit state.json back
@@ -36,6 +41,7 @@ jobs:
           CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
           SYMBOL_ID_NAS100: ${{ secrets.CTRADER_SYMBOL_ID_NAS100 }}
           GH_PAT_FOR_SECRETS: ${{ secrets.GH_PAT_FOR_SECRETS }}
+          FORCE_RUN_WEEKEND: ${{ github.event.inputs.force_run_weekend }}
         run: python main.py
 
       - name: Commit updated state
