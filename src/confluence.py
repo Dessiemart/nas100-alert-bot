@@ -46,7 +46,7 @@ class ConfluenceCheck:
         if self.direction != "unknown":
             lines.append(f"Leaning: {'BUY' if self.direction == 'buy' else 'SELL'}")
         for name, ok in zip(self.step_names, self.step_results):
-            lines.append(f"{'\u2705' if ok else '\u23f3'} {name}")
+            lines.append(f"{'✅' if ok else '⏳'} {name}")
         lines.append("\u26a0\ufe0f Not a full setup yet \u2014 this is a heads-up, not an entry signal.")
         return "\n".join(lines)
 
