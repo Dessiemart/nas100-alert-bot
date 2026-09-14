@@ -40,9 +40,9 @@ jobs:
           CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
           CTRADER_REFRESH_TOKEN: ${{ secrets.CTRADER_REFRESH_TOKEN }}
           CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
-          SYMBOL_ID_NAS100: ${{ secrets.CTRADER_SYMBOL_ID_NAS100 }}
-          SYMBOL_ID_XAUUSD: ${{ secrets.CTRADER_SYMBOL_ID_XAUUSD }}
-          SYMBOL_ID_EURUSD: ${{ secrets.CTRADER_SYMBOL_ID_EURUSD }}
+          SYMBOL_ID_NAS100: ${{ vars.CTRADER_SYMBOL_ID_NAS100 }}
+          SYMBOL_ID_XAUUSD: ${{ vars.CTRADER_SYMBOL_ID_XAUUSD }}
+          SYMBOL_ID_EURUSD: ${{ vars.CTRADER_SYMBOL_ID_EURUSD }}
           GH_PAT_FOR_SECRETS: ${{ secrets.GH_PAT_FOR_SECRETS }}
           FORCE_RUN_WEEKEND: ${{ github.event.inputs.force_run_weekend }}
         run: python main.py
