@@ -31,6 +31,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Debug - check variables
+        run: |
+          echo "NAS100 var: '${{ vars.CTRADER_SYMBOL_ID_NAS100 }}'"
+          echo "XAUUSD var: '${{ vars.CTRADER_SYMBOL_ID_XAUUSD }}'"
+          echo "EURUSD var: '${{ vars.CTRADER_SYMBOL_ID_EURUSD }}'"
+
       - name: Run alert engine
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
