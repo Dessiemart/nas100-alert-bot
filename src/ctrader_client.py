@@ -1,12 +1,17 @@
 """
-cTrader Open API client - used ONLY for NAS100 now, since Twelve Data's
-free plan doesn't include major US indices. Gold and EURUSD stay on
-Twelve Data.
+cTrader Open API client. UPDATED: now fetches ALL THREE symbols
+(NAS100, XAUUSD, EURUSD) instead of NAS100 only - Twelve Data is no
+longer used for market data at all, which removes the 800-credit/day
+ceiling entirely and is what allows the 5-minute schedule.
 
-UPDATED: writes a clear status to the GitHub Actions Job Summary tab at
-every key step (token refresh, secret persistence, candle fetch) - much
-easier to read on mobile than digging through raw logs. Check the
-Summary tab of any run, not the expanded log.
+One TCP connection per run: authenticate the app once, authorize the
+account once, then fetch every requested (symbol, period) combo over
+that same connection before disconnecting.
+
+Refresh-token rotation handling is unchanged from before: cTrader hands
+back a new refresh token every time the old one is used, so the new
+access token AND new refresh token are both pushed back to GitHub
+Secrets automatically after every refresh.
 """
 
 import os
@@ -31,6 +36,12 @@ TOKEN_URL = "https://openapi.ctrader.com/apps/token"
 
 GITHUB_OWNER = "Dessiemart"
 GITHUB_REPO = "nas100-alert-bot"
+
+SYMBOL_ID_MAP = {
+    "NAS100": config.CTRADER_SYMBOL_ID_NAS100,
+    "XAUUSD": config.CTRADER_SYMBOL_ID_XAUUSD,
+    "EURUSD": config.CTRADER_SYMBOL_ID_EURUSD,
+}
 
 PERIOD_MAP = {
     "1M": ProtoOATrendbarPeriod.M1,
@@ -84,7 +95,6 @@ def refresh_access_token() -> str:
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         _summary(f"🔴 Refresh HTTP call FAILED: {exc}")
-        _summary(f"🔴 Response body (if any): {getattr(exc, 'response', None) and exc.response.text}")
         raise
 
     data = resp.json()
@@ -101,7 +111,7 @@ def refresh_access_token() -> str:
         _summary("ℹ️ Refresh token rotated - attempting to persist new tokens to GitHub Secrets...")
         gh_pat = os.environ.get("GH_PAT_FOR_SECRETS")
         if not gh_pat:
-            _summary("🔴 GH_PAT_FOR_SECRETS is not set in this workflow's env - cannot persist. "
+            _summary("🔴 GH_PAT_FOR_SECRETS is not set - cannot persist. "
                       "NEXT run will fail unless you update the secret manually.")
         else:
             try:
@@ -122,17 +132,18 @@ def refresh_access_token() -> str:
     return access_token
 
 
-def fetch_nas100_trendbars(period_labels: list) -> dict:
-    """Returns {("NAS100", period_label): [Candle, ...], ...} for the
-    requested periods. Empty dict on any failure (never crashes the
-    whole run - main.py just won't have NAS100 data that cycle)."""
-    if not period_labels:
+def fetch_trendbars(symbol_period_list: list) -> dict:
+    """symbol_period_list: [("NAS100", "1H"), ("XAUUSD", "5M"), ...]
+    Returns {(symbol, period): [Candle, ...], ...} for every requested
+    combo that succeeded. Missing/failed combos are simply absent from
+    the result (never crashes the whole run)."""
+    if not symbol_period_list:
         return {}
 
     try:
         access_token = refresh_access_token()
     except Exception as exc:  # noqa: BLE001
-        _summary(f"🔴 NAS100 fetch ABORTED - token refresh failed: {exc}")
+        _summary(f"🔴 Fetch ABORTED - token refresh failed: {exc}")
         return {}
 
     results = {}
@@ -141,7 +152,7 @@ def fetch_nas100_trendbars(period_labels: list) -> dict:
     done = defer.Deferred()
 
     def on_error(failure):
-        _summary(f"🔴 NAS100 cTrader connection error: {failure}")
+        _summary(f"🔴 cTrader connection error: {failure}")
         if not done.called:
             done.errback(failure)
 
@@ -153,10 +164,16 @@ def fetch_nas100_trendbars(period_labels: list) -> dict:
                 done.callback(results)
             return
 
-        period_label = remaining[0]
+        symbol, period_label = remaining[0]
+        symbol_id = SYMBOL_ID_MAP.get(symbol)
+        if symbol_id is None:
+            _summary(f"🔴 No cTrader symbol ID configured for {symbol} - skipping.")
+            fetch_next(remaining[1:])
+            return
+
         req = ProtoOAGetTrendbarsReq()
         req.ctidTraderAccountId = config.CTRADER_ACCOUNT_ID
-        req.symbolId = config.CTRADER_SYMBOL_ID_NAS100
+        req.symbolId = symbol_id
         req.period = PERIOD_MAP[period_label]
         req.count = COUNT_PER_PERIOD[period_label]
         to_ts = int(time_module.time() * 1000)
@@ -174,8 +191,8 @@ def fetch_nas100_trendbars(period_labels: list) -> dict:
                     open_time, bar.low, bar.deltaOpen, bar.deltaHigh, bar.deltaClose,
                 ))
             candles.sort(key=lambda c: c.time)
-            results[("NAS100", period_label)] = candles
-            _summary(f"✅ NAS100 {period_label}: {len(candles)} candles")
+            results[(symbol, period_label)] = candles
+            _summary(f"✅ {symbol} {period_label}: {len(candles)} candles")
             fetch_next(remaining[1:])
 
         deferred.addCallbacks(on_response, on_error)
@@ -191,7 +208,7 @@ def fetch_nas100_trendbars(period_labels: list) -> dict:
             acc_req.ctidTraderAccountId = config.CTRADER_ACCOUNT_ID
             acc_req.accessToken = access_token
             d2 = client.send(acc_req)
-            d2.addCallbacks(lambda _r: fetch_next(period_labels), on_error)
+            d2.addCallbacks(lambda _r: fetch_next(symbol_period_list), on_error)
 
         d.addCallbacks(app_authed, on_error)
 
@@ -216,7 +233,7 @@ def fetch_nas100_trendbars(period_labels: list) -> dict:
     try:
         reactor.run()
     except Exception as exc:  # noqa: BLE001
-        _summary(f"🔴 NAS100 fetch reactor error: {exc}")
+        _summary(f"🔴 fetch reactor error: {exc}")
         return {}
 
     return results
