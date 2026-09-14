@@ -2,9 +2,10 @@ name: NAS100 Alert Bot
 
 on:
   schedule:
-    # Every 15 minutes - Twelve Data's free tier is credit-limited, so
-    # we check less often than the old cTrader version did.
-    - cron: "*/15 * * * *"
+    # Every 5 minutes - now that all 3 symbols come from cTrader
+    # (no per-call credit cost), there's no more Twelve Data ceiling
+    # forcing a slower schedule.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       force_run_weekend:
@@ -40,6 +41,8 @@ jobs:
           CTRADER_REFRESH_TOKEN: ${{ secrets.CTRADER_REFRESH_TOKEN }}
           CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
           SYMBOL_ID_NAS100: ${{ secrets.CTRADER_SYMBOL_ID_NAS100 }}
+          SYMBOL_ID_XAUUSD: ${{ secrets.CTRADER_SYMBOL_ID_XAUUSD }}
+          SYMBOL_ID_EURUSD: ${{ secrets.CTRADER_SYMBOL_ID_EURUSD }}
           GH_PAT_FOR_SECRETS: ${{ secrets.GH_PAT_FOR_SECRETS }}
           FORCE_RUN_WEEKEND: ${{ github.event.inputs.force_run_weekend }}
         run: python main.py
