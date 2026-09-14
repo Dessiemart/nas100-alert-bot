@@ -1,21 +1,24 @@
 """
 Entry point. Run by GitHub Actions on a schedule.
 
+UPDATED: all 3 symbols (NAS100, XAUUSD, EURUSD) now come from cTrader,
+in a single connection per run. Twelve Data is no longer used for
+market data - this removes the 800-credit/day ceiling entirely and is
+what allows dropping the schedule to 5 minutes.
+
 Flow:
-  0. Skip entirely if it's the weekend (markets closed) - saves API
-     credits and Actions minutes. Can be overridden for manual testing
-     via the FORCE_RUN_WEEKEND env var.
-  1. Work out which symbol/timeframe combos are actually worth fetching
-     right now (see build_data_plan) - Twelve Data's free tier is
-     credit-limited, so we only pull extra timeframes during the
+  0. Skip entirely if it's the weekend (markets closed). Can be
+     overridden for manual testing via the FORCE_RUN_WEEKEND env var.
+  1. Work out which symbol/timeframe combos are worth fetching right
+     now (see build_data_plan) - extra timeframes only during the
      killzone they're relevant to, plus cheap 1H trend context always.
-  2. Fetch that data from Twelve Data.
+  2. Fetch all of it from cTrader in one connection.
   3. Run all five strategies against it.
   4. For each new confirmed setup: skip it if high-impact news is
      imminent; otherwise attach a suggested position size, send it to
      Telegram, and log it for later review.
   5. Run the partial-confluence progress checkers and send "X/Y
-     confluences" heads-ups for setups one step from confirming.
+     confluences" heads-ups for setups with at least one step confirmed.
   6. Once a day, send a heartbeat summary so you know the bot is alive
      even on quiet days.
 
@@ -31,8 +34,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
-from src.twelvedata_client import fetch_market_data
-from src.ctrader_client import fetch_nas100_trendbars
+from src.ctrader_client import fetch_trendbars
 from src.strategies import ALL_STRATEGIES
 from src.confluence import ALL_PROGRESS_CHECKERS
 from src.telegram_alert import send_telegram_message, format_alert
@@ -45,11 +47,10 @@ from src.position_sizing import suggested_lot_size, format_size_note, SymbolSpec
 from src import telegram_bot
 
 
-def build_data_plan(now) -> list[tuple[str, str]]:
+def build_data_plan(now) -> list:
     """Trim which symbol/timeframe combos we fetch based on which
-    killzone is currently relevant, to stay within Twelve Data's free
-    credit budget - and skip any symbol disabled from the dashboard
-    (config.ALL_SYMBOLS, sourced from settings.json)."""
+    killzone is currently relevant - and skip any symbol disabled from
+    the dashboard (config.ALL_SYMBOLS, sourced from settings.json)."""
     plan = [(s, "1H") for s in ("NAS100", "XAUUSD", "EURUSD")]  # always - cheap trend context
 
     in_asian_or_grace = ASIAN.contains(now) or ASIAN.contains(now - timedelta(hours=3))
@@ -69,7 +70,6 @@ def build_data_plan(now) -> list[tuple[str, str]]:
 
     plan = [(symbol, period) for symbol, period in plan if symbol in config.ALL_SYMBOLS]
 
-    # de-duplicate while preserving order
     seen = set()
     deduped = []
     for item in plan:
@@ -127,7 +127,7 @@ def append_alert_log(alert) -> None:
 def maybe_send_heartbeat(state: dict) -> None:
     today_ny = datetime.now(NY_TZ).date().isoformat()
     if state["last_heartbeat_ny_date"] == today_ny:
-        return  # already sent today
+        return
 
     if state["last_heartbeat_ny_date"] is not None:
         text = (
@@ -142,23 +142,24 @@ def maybe_send_heartbeat(state: dict) -> None:
     state["near_miss_today"] = 0
 
 
-# NOTE: interactive button handling (My Outcome, Fundamentals, Ask AI,
-# Support) used to be polled here every ~15 min. That's now handled
-# INSTANTLY by the Apps Script webhook backend (Code.gs) instead -
-# Telegram pushes button taps there the moment they happen, rather
-# than this script needing to check for them. This Python bot now only
-# sends PROACTIVE messages (trading alerts, near-miss heads-ups, the
-# daily heartbeat, the daily fundamentals digest below) - all of which
-# work fine regardless of webhook mode, since they're outgoing sends,
-# not incoming update polling.
-
-
 def maybe_send_daily_fundamentals(state: dict, now) -> None:
     today_ny = now.astimezone(NY_TZ).date().isoformat()
     if state.get("last_fundamentals_digest_date") == today_ny:
         return
     telegram_bot.send_with_menu(build_daily_digest(now))
     state["last_fundamentals_digest_date"] = today_ny
+
+
+def build_symbol_specs() -> dict:
+    """All 3 symbols now come from cTrader, and none of them expose a
+    live spec fetch in this scoped-down usage - these are the same
+    assumed contract sizes config.py already flags for verification."""
+    return {
+        symbol: SymbolSpec(
+            lot_size=config.ASSUMED_LOT_SIZE[symbol], min_volume=1, max_volume=10000000, step_volume=1,
+        )
+        for symbol in config.ALL_SYMBOLS
+    }
 
 
 def main() -> None:
@@ -174,21 +175,10 @@ def main() -> None:
         print("[main] weekend override active - proceeding anyway for testing.")
 
     data_plan = build_data_plan(now)
-    nas100_periods = [period for symbol, period in data_plan if symbol == "NAS100"]
-    twelvedata_plan = [(symbol, period) for symbol, period in data_plan if symbol != "NAS100"]
+    print(f"[main] fetching from cTrader: {data_plan}")
 
-    print(f"[main] fetching NAS100 ({nas100_periods}) from cTrader, "
-          f"{twelvedata_plan} from Twelve Data")
-
-    market_data = fetch_market_data(twelvedata_plan)
-    data = dict(market_data["trendbars"])
-    symbol_specs = dict(market_data["symbols"])
-
-    nas100_data = fetch_nas100_trendbars(nas100_periods)
-    data.update(nas100_data)
-    symbol_specs["NAS100"] = SymbolSpec(
-        lot_size=config.ASSUMED_LOT_SIZE["NAS100"], min_volume=1, max_volume=10000000, step_volume=1,
-    )
+    data = fetch_trendbars(data_plan)
+    symbol_specs = build_symbol_specs()
 
     balance = config.ACCOUNT_BALANCE
     for (symbol, period), candles in data.items():
@@ -200,7 +190,7 @@ def main() -> None:
     for strategy_fn in ALL_STRATEGIES:
         try:
             alerts = strategy_fn(data)
-        except Exception as exc:  # noqa: BLE001 - one bad strategy shouldn't kill the run
+        except Exception as exc:  # noqa: BLE001
             print(f"[main] strategy {strategy_fn.__name__} raised: {exc}")
             continue
         for alert in alerts:
@@ -215,7 +205,7 @@ def main() -> None:
 
     for alert in new_alerts:
         if news_event:
-            continue  # don't mark as seen - retry once the news window passes
+            continue
 
         seen.add(alert.key)
         spec = symbol_specs.get(alert.symbol)
@@ -245,7 +235,7 @@ def main() -> None:
             continue
         for check in checks:
             if check.confirmed == 0:
-                continue  # nothing confirmed yet - not worth a message
+                continue
             if check.key in seen:
                 continue
             new_progress.append(check)
