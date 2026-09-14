@@ -90,6 +90,9 @@ LONDON_TT_WEAK_BODY_PCT = 0.30      # "London tt": weak candle body < 30% of ran
 # don't spam the same signal every run) ----
 STATE_FILE = "state.json"
 
+# ---- Live setups file (written every run for the dashboard) ----
+LIVE_SETUPS_FILE = "live_setups.json"
+
 # ---- Partial-confluence notifications ----
 # Notify when a setup is missing at most this many steps out of its full
 # checklist (e.g. 1 = "4 out of 5 confirmed, one step left").
