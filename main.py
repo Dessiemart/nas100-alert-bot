@@ -19,11 +19,13 @@ Flow:
      Telegram, and log it for later review.
   5. Run the partial-confluence progress checkers and send "X/Y
      confluences" heads-ups for setups with at least one step confirmed.
+     Also write the full current confluence state to live_setups.json
+     for the dashboard.
   6. Once a day, send a heartbeat summary so you know the bot is alive
      even on quiet days.
 
-State (state.json) and the outcome log (alerts_log.json) are committed
-back to the repo by the workflow after each run.
+State (state.json), the outcome log (alerts_log.json), and live_setups.json
+are committed back to the repo by the workflow after each run.
 """
 
 import json
@@ -122,6 +124,33 @@ def append_alert_log(alert) -> None:
 
     with open(config.ALERTS_LOG_FILE, "w") as f:
         json.dump(entries, f)
+
+
+def write_live_setups(checks: list) -> None:
+    """Serialize current partial-confluence state for the dashboard."""
+    setups = []
+    for check in checks:
+        if check.confirmed == 0:
+            continue
+        setups.append({
+            "strategy": check.strategy,
+            "symbol": check.symbol,
+            "direction": check.direction,
+            "confirmed": check.confirmed,
+            "total": check.total,
+            "steps": [
+                {"label": name, "ok": bool(ok)}
+                for name, ok in zip(check.step_names, check.step_results)
+            ],
+            "leaning": "BUY" if check.direction == "buy" else ("SELL" if check.direction == "sell" else "unknown"),
+            "key": check.key,
+        })
+    payload = {
+        "updated_at_utc": datetime.utcnow().isoformat() + "Z",
+        "setups": setups,
+    }
+    with open(config.LIVE_SETUPS_FILE, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def maybe_send_heartbeat(state: dict) -> None:
@@ -226,6 +255,7 @@ def main() -> None:
     if not new_alerts:
         print("[main] no new setups this run.")
 
+    all_progress = []
     new_progress = []
     for checker_fn in ALL_PROGRESS_CHECKERS:
         try:
@@ -236,10 +266,14 @@ def main() -> None:
         for check in checks:
             if check.confirmed == 0:
                 continue
+            all_progress.append(check)
             if check.key in seen:
                 continue
             new_progress.append(check)
             seen.add(check.key)
+
+    # Always write the current confluence snapshot for the dashboard
+    write_live_setups(all_progress)
 
     for check in new_progress:
         print(f"[main] sending near-miss: {check.key}")
