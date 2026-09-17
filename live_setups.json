@@ -1,4 +1,151 @@
 {
-  "updated_at_utc": "2026-09-17T01:47:15.576160Z",
-  "setups": []
+  "updated_at_utc": "2026-09-17T06:44:42.856010Z",
+  "setups": [
+    {
+      "strategy": "Asians",
+      "symbol": "NAS100",
+      "direction": "unknown",
+      "confirmed": 1,
+      "total": 2,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "1H trend clear (continuation vs reversal)",
+          "ok": false
+        }
+      ],
+      "leaning": "unknown",
+      "key": "progress|Asians|NAS100|unknown|1of2"
+    },
+    {
+      "strategy": "Asians",
+      "symbol": "EURUSD",
+      "direction": "unknown",
+      "confirmed": 1,
+      "total": 2,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "1H trend clear (continuation vs reversal)",
+          "ok": false
+        }
+      ],
+      "leaning": "unknown",
+      "key": "progress|Asians|EURUSD|unknown|1of2"
+    },
+    {
+      "strategy": "London tt",
+      "symbol": "NAS100",
+      "direction": "sell",
+      "confirmed": 3,
+      "total": 4,
+      "steps": [
+        {
+          "label": "Asian 15M trend clear",
+          "ok": true
+        },
+        {
+          "label": "Pullback >=25% of Asian range",
+          "ok": true
+        },
+        {
+          "label": "15M candle closed since London start",
+          "ok": true
+        },
+        {
+          "label": "30M candle agrees with Asian trend",
+          "ok": false
+        }
+      ],
+      "leaning": "SELL",
+      "key": "progress|London tt|NAS100|sell|3of4"
+    },
+    {
+      "strategy": "London tt",
+      "symbol": "EURUSD",
+      "direction": "sell",
+      "confirmed": 3,
+      "total": 4,
+      "steps": [
+        {
+          "label": "Asian 15M trend clear",
+          "ok": true
+        },
+        {
+          "label": "Pullback >=25% of Asian range",
+          "ok": true
+        },
+        {
+          "label": "15M candle closed since London start",
+          "ok": true
+        },
+        {
+          "label": "30M candle agrees with Asian trend",
+          "ok": false
+        }
+      ],
+      "leaning": "SELL",
+      "key": "progress|London tt|EURUSD|sell|3of4"
+    },
+    {
+      "strategy": "Asian tt",
+      "symbol": "NAS100",
+      "direction": "buy",
+      "confirmed": 3,
+      "total": 4,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "Causal swing identified",
+          "ok": true
+        },
+        {
+          "label": "5M CHoCH (close beyond swing)",
+          "ok": true
+        },
+        {
+          "label": "Unmitigated FVG found in displacement leg",
+          "ok": false
+        }
+      ],
+      "leaning": "BUY",
+      "key": "progress|Asian tt|NAS100|buy|3of4"
+    },
+    {
+      "strategy": "Asian tt",
+      "symbol": "EURUSD",
+      "direction": "sell",
+      "confirmed": 2,
+      "total": 4,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "Causal swing identified",
+          "ok": true
+        },
+        {
+          "label": "5M CHoCH (close beyond swing)",
+          "ok": false
+        },
+        {
+          "label": "Unmitigated FVG found in displacement leg",
+          "ok": false
+        }
+      ],
+      "leaning": "SELL",
+      "key": "progress|Asian tt|EURUSD|sell|2of4"
+    }
+  ]
 }
