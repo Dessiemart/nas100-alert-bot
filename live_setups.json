@@ -1,4 +1,159 @@
 {
-  "updated_at_utc": "2026-09-18T00:48:13.277399Z",
-  "setups": []
+  "updated_at_utc": "2026-09-18T05:17:39.592407Z",
+  "setups": [
+    {
+      "strategy": "Asians",
+      "symbol": "NAS100",
+      "direction": "unknown",
+      "confirmed": 1,
+      "total": 2,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "1H trend clear (continuation vs reversal)",
+          "ok": false
+        }
+      ],
+      "leaning": "unknown",
+      "key": "progress|Asians|NAS100|unknown|1of2"
+    },
+    {
+      "strategy": "Asians",
+      "symbol": "XAUUSD",
+      "direction": "unknown",
+      "confirmed": 1,
+      "total": 2,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "1H trend clear (continuation vs reversal)",
+          "ok": false
+        }
+      ],
+      "leaning": "unknown",
+      "key": "progress|Asians|XAUUSD|unknown|1of2"
+    },
+    {
+      "strategy": "Asians (continuation)",
+      "symbol": "EURUSD",
+      "direction": "buy",
+      "confirmed": 3,
+      "total": 6,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "1H trend agrees (continuation)",
+          "ok": true
+        },
+        {
+          "label": "5M BOS in trend direction",
+          "ok": true
+        },
+        {
+          "label": "Unmitigated 5M FVG/OB found",
+          "ok": false
+        },
+        {
+          "label": "Zone tapped",
+          "ok": false
+        },
+        {
+          "label": "Reaction candle closed",
+          "ok": false
+        }
+      ],
+      "leaning": "BUY",
+      "key": "progress|Asians (continuation)|EURUSD|buy|3of6"
+    },
+    {
+      "strategy": "Asian tt",
+      "symbol": "NAS100",
+      "direction": "sell",
+      "confirmed": 1,
+      "total": 4,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "Causal swing identified",
+          "ok": false
+        },
+        {
+          "label": "5M CHoCH (close beyond swing)",
+          "ok": false
+        },
+        {
+          "label": "Unmitigated FVG found in displacement leg",
+          "ok": false
+        }
+      ],
+      "leaning": "SELL",
+      "key": "progress|Asian tt|NAS100|sell|1of4"
+    },
+    {
+      "strategy": "Asian tt",
+      "symbol": "XAUUSD",
+      "direction": "sell",
+      "confirmed": 2,
+      "total": 4,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "Causal swing identified",
+          "ok": true
+        },
+        {
+          "label": "5M CHoCH (close beyond swing)",
+          "ok": false
+        },
+        {
+          "label": "Unmitigated FVG found in displacement leg",
+          "ok": false
+        }
+      ],
+      "leaning": "SELL",
+      "key": "progress|Asian tt|XAUUSD|sell|2of4"
+    },
+    {
+      "strategy": "Asian tt",
+      "symbol": "EURUSD",
+      "direction": "sell",
+      "confirmed": 1,
+      "total": 4,
+      "steps": [
+        {
+          "label": "Asian high/low swept",
+          "ok": true
+        },
+        {
+          "label": "Causal swing identified",
+          "ok": false
+        },
+        {
+          "label": "5M CHoCH (close beyond swing)",
+          "ok": false
+        },
+        {
+          "label": "Unmitigated FVG found in displacement leg",
+          "ok": false
+        }
+      ],
+      "leaning": "SELL",
+      "key": "progress|Asian tt|EURUSD|sell|1of4"
+    }
+  ]
 }
