@@ -1,9 +1,12 @@
 """
 Partial-confluence progress tracking.
 
-UPDATED: "Asians", "Asian tt", and "London tt" progress checkers now run
-on all three watched symbols (NAS100, XAUUSD, EURUSD), matching the same
-change made in src/strategies.py.
+UPDATED: "Asians" progress checkers now match the shortened, proactive
+strategy chain (sweep -> BOS/CHoCH -> FVG found = alert fires), since
+the tap+reaction steps were removed from src/strategies.py.
+
+"Asians", "Asian tt", and "London tt" run on all three watched symbols
+(NAS100, XAUUSD, EURUSD).
 """
 
 from dataclasses import dataclass, field
@@ -52,7 +55,8 @@ class ConfluenceCheck:
 
 
 # ---------------------------------------------------------------------------
-# 1. "Asians" (now runs on NAS100, XAUUSD, EURUSD)
+# 1. "Asians" - UPDATED: matches the new proactive strategy (no more
+#    tap/reaction steps - alert fires once the FVG/zone is found).
 # ---------------------------------------------------------------------------
 
 def check_asians_progress(data: dict) -> list[ConfluenceCheck]:
@@ -109,10 +113,10 @@ def _check_asians_progress_for_symbol(symbol: str, data: dict) -> list[Confluenc
 
         if mode == "continuation":
             names = ["Asian high/low swept", "1H trend agrees (continuation)", "5M BOS in trend direction",
-                     "Unmitigated 5M FVG/OB found", "Zone tapped", "Reaction candle closed"]
+                     "Unmitigated 5M FVG found (this is the alert trigger)"]
             r = [swept, swept]
             if not swept:
-                r += [False, False, False, False]
+                r += [False, False]
                 results.append(ConfluenceCheck("Asians (continuation)", symbol, dir_label, names, r))
                 continue
 
@@ -138,43 +142,32 @@ def _check_asians_progress_for_symbol(symbol: str, data: dict) -> list[Confluenc
                 gap = unmitigated_fvg_in_range(fvgs, post_asian, bos_idx, len(post_asian) - 1, direction)
             r.append(gap is not None)
 
-            tap_idx = _zone_tap(post_asian, gap.top, gap.bottom, gap.formed_at_index + 1) if gap else None
-            r.append(tap_idx is not None)
-
-            reaction_idx = _reaction_candle(post_asian, tap_idx, direction) if tap_idx is not None else None
-            r.append(reaction_idx is not None)
-
             results.append(ConfluenceCheck("Asians (continuation)", symbol, dir_label, names, r))
 
         else:
-            names = ["Asian high/low swept", "1H trend disagrees (reversal)", "15M FVG/OB zone found",
-                     "5M CHoCH (close beyond swing)", "Zone tapped", "Reaction candle closed"]
+            names = ["Asian high/low swept", "1H trend disagrees (reversal)",
+                     "5M CHoCH (close beyond swing)", "15M FVG zone found (this is the alert trigger)"]
             r = [swept, swept]
             if not swept:
-                r += [False, False, False, False]
+                r += [False, False]
                 results.append(ConfluenceCheck("Asians (reversal)", symbol, dir_label, names, r))
                 continue
 
-            zone_direction = Direction.BEARISH if swept_is_high else Direction.BULLISH
-            fvgs_15 = find_fvgs(c15)
-            mark_mitigated(fvgs_15, c15)
-            candidate_zones = [g for g in fvgs_15 if g.direction == zone_direction and not g.mitigated]
-            zone = candidate_zones[-1] if candidate_zones else None
-            r.append(zone is not None)
-
+            swings = find_swings(post_asian[: sweep_idx + 1], width=1)
+            ref_swing = last_swing_before(swings, sweep_idx, is_high=not swept_is_high)
             choch_idx = None
-            if zone is not None:
-                swings = find_swings(post_asian[: sweep_idx + 1], width=1)
-                ref_swing = last_swing_before(swings, sweep_idx, is_high=not swept_is_high)
-                if ref_swing is not None:
-                    choch_idx = _close_beyond(post_asian, ref_swing.price, sweep_idx + 1, direction)
+            if ref_swing is not None:
+                choch_idx = _close_beyond(post_asian, ref_swing.price, sweep_idx + 1, direction)
             r.append(choch_idx is not None)
 
-            tap_idx = _zone_tap(post_asian, zone.top, zone.bottom, choch_idx) if choch_idx is not None else None
-            r.append(tap_idx is not None)
-
-            reaction_idx = _reaction_candle(post_asian, tap_idx, direction) if tap_idx is not None else None
-            r.append(reaction_idx is not None)
+            zone = None
+            if choch_idx is not None:
+                zone_direction = Direction.BEARISH if swept_is_high else Direction.BULLISH
+                fvgs_15 = find_fvgs(c15)
+                mark_mitigated(fvgs_15, c15)
+                candidate_zones = [g for g in fvgs_15 if g.direction == zone_direction and not g.mitigated]
+                zone = candidate_zones[-1] if candidate_zones else None
+            r.append(zone is not None)
 
             results.append(ConfluenceCheck("Asians (reversal)", symbol, dir_label, names, r))
 
@@ -182,7 +175,7 @@ def _check_asians_progress_for_symbol(symbol: str, data: dict) -> list[Confluenc
 
 
 # ---------------------------------------------------------------------------
-# 2. "London tt" (now runs on NAS100, XAUUSD, EURUSD)
+# 2. "London tt" (unchanged - runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def check_london_tt_progress(data: dict) -> list[ConfluenceCheck]:
@@ -251,7 +244,7 @@ def check_london_tt_progress(data: dict) -> list[ConfluenceCheck]:
 
 
 # ---------------------------------------------------------------------------
-# 3. "Asian tt" (now runs on NAS100, XAUUSD, EURUSD)
+# 3. "Asian tt" (unchanged - runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def check_asian_tt_progress(data: dict) -> list[ConfluenceCheck]:
