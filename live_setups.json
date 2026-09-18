@@ -1,5 +1,5 @@
 {
-  "updated_at_utc": "2026-09-18T05:17:39.592407Z",
+  "updated_at_utc": "2026-09-18T09:52:02.531998Z",
   "setups": [
     {
       "strategy": "Asians",
@@ -73,6 +73,33 @@
       ],
       "leaning": "BUY",
       "key": "progress|Asians (continuation)|EURUSD|buy|3of6"
+    },
+    {
+      "strategy": "London tt",
+      "symbol": "XAUUSD",
+      "direction": "sell",
+      "confirmed": 3,
+      "total": 4,
+      "steps": [
+        {
+          "label": "Asian 15M trend clear",
+          "ok": true
+        },
+        {
+          "label": "Pullback >=25% of Asian range",
+          "ok": true
+        },
+        {
+          "label": "15M candle closed since London start",
+          "ok": true
+        },
+        {
+          "label": "30M candle agrees with Asian trend",
+          "ok": false
+        }
+      ],
+      "leaning": "SELL",
+      "key": "progress|London tt|XAUUSD|sell|3of4"
     },
     {
       "strategy": "Asian tt",
