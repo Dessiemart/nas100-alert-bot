@@ -4,12 +4,20 @@ the `data` dict produced by twelvedata_client.fetch_market_data (keyed by
 (symbol, period_label) -> list[Candle]) and returns a list of Alert
 objects - empty if no valid setup exists right now.
 
-UPDATED: "Asians", "Asian tt", and "London tt" now run on all three
-watched symbols (NAS100, XAUUSD, EURUSD) instead of their original
-narrower scope, since none of their rules are actually NAS100/Gold
-specific - they were just never turned on for every symbol. "newyork"
-and "newyork tt" together already covered all three symbols, so those
-are unchanged.
+UPDATED: "Asians" now alerts PROACTIVELY, same as London tt/Asian tt/
+newyork already did - the moment the FVG forms after the break of
+structure, as a pending limit order. It previously waited for price to
+tap that zone AND for a full reaction candle to CLOSE before alerting
+with a market order at that already-closed price - by which point price
+had usually already moved past the entry. This was the main source of
+"the confirmation arrives after the move already happened" for this
+specific strategy. The sweep and BOS confirmations (the ones that
+actually matter for trend/direction) are unchanged - only the
+tap+reaction wait was removed.
+
+"Asians", "Asian tt", and "London tt" run on all three watched symbols
+(NAS100, XAUUSD, EURUSD). "newyork" and "newyork tt" together already
+covered all three symbols.
 """
 
 from dataclasses import dataclass, field
@@ -25,11 +33,11 @@ from src.killzones import ASIAN, LONDON, NEW_YORK_AM, NY_TZ, pre_london_window
 
 @dataclass
 class Alert:
-    key: str
+    key: str            # unique id for dedup across runs
     strategy: str
     symbol: str
-    direction: str
-    entry_type: str
+    direction: str       # "buy" or "sell"
+    entry_type: str      # "market", "limit", "buy-stop", "sell-stop"
     entry: float
     sl: float
     tp: float
@@ -37,6 +45,8 @@ class Alert:
 
 
 def _close_beyond(candles: list[Candle], level: float, from_index: int, direction: Direction) -> int | None:
+    """First index >= from_index whose CLOSE breaks beyond `level` in the
+    given direction. Wicks don't count."""
     for i in range(from_index, len(candles)):
         c = candles[i]
         if direction == Direction.BULLISH and c.close > level:
@@ -68,7 +78,9 @@ ALL_SYMBOLS = ("NAS100", "XAUUSD", "EURUSD")
 
 
 # ---------------------------------------------------------------------------
-# 1. "Asians" (now runs on NAS100, XAUUSD, EURUSD)
+# 1. "Asians" - Asian killzone sweep + 1H trend continuation/reversal
+#    UPDATED: now alerts proactively at FVG formation (pending limit
+#    order), not after a tap + closed reaction candle.
 # ---------------------------------------------------------------------------
 
 def asians_strategy(data: dict) -> list[Alert]:
@@ -151,28 +163,22 @@ def _asians_continuation(symbol, working, sweep_idx, direction: Direction, swept
     if gap is None:
         return None
 
-    tap_idx = _zone_tap(working, gap.top, gap.bottom, gap.formed_at_index + 1)
-    if tap_idx is None:
-        return None
-
-    reaction_idx = _reaction_candle(working, tap_idx, direction)
-    if reaction_idx is None:
-        return None
-
-    reaction = working[reaction_idx]
-    entry = reaction.close
+    # PROACTIVE: alert the moment the FVG forms, as a pending limit order
+    # at the zone - don't wait for price to tap it and a reaction candle
+    # to close, which is what made this strategy alert AFTER the move.
+    entry = gap.midpoint
     sl = gap.bottom if direction == Direction.BULLISH else gap.top
     risk = abs(entry - sl)
     tp = entry + 2 * risk if direction == Direction.BULLISH else entry - 2 * risk
 
     return Alert(
-        key=f"asians|{symbol}|continuation|{reaction.time.isoformat()}",
+        key=f"asians|{symbol}|continuation|{working[gap.formed_at_index].time.isoformat()}",
         strategy="Asians (continuation)",
         symbol=symbol,
         direction="buy" if direction == Direction.BULLISH else "sell",
-        entry_type="market",
+        entry_type="limit",
         entry=entry, sl=sl, tp=tp,
-        note="SL/TP default (2R) - 'Asians' never had explicit SL/TP rules defined, confirm before trusting these levels.",
+        note="Pending limit order at the FVG - alerted at formation, not after a tap+reaction, so you get the entry before price potentially moves through it. Leave it working until filled or the session invalidates it.",
     )
 
 
@@ -193,33 +199,28 @@ def _asians_reversal(symbol, c15, working, sweep_idx, direction: Direction, swep
     if choch_idx is None:
         return None
 
-    tap_idx = _zone_tap(working, zone.top, zone.bottom, choch_idx)
-    if tap_idx is None:
-        return None
-
-    reaction_idx = _reaction_candle(working, tap_idx, direction)
-    if reaction_idx is None:
-        return None
-
-    reaction = working[reaction_idx]
-    entry = reaction.close
+    # PROACTIVE: alert the moment the CHoCH confirms and the 15M zone is
+    # identified, as a pending limit order - don't wait for a 5M tap and
+    # closed reaction candle on top of that.
+    entry = zone.midpoint
     sl = zone.bottom if direction == Direction.BULLISH else zone.top
     risk = abs(entry - sl)
     tp = entry + 2 * risk if direction == Direction.BULLISH else entry - 2 * risk
 
     return Alert(
-        key=f"asians|{symbol}|reversal|{reaction.time.isoformat()}",
+        key=f"asians|{symbol}|reversal|{working[choch_idx].time.isoformat()}",
         strategy="Asians (reversal)",
         symbol=symbol,
         direction="buy" if direction == Direction.BULLISH else "sell",
-        entry_type="market",
+        entry_type="limit",
         entry=entry, sl=sl, tp=tp,
-        note="SL/TP default (2R) - 'Asians' never had explicit SL/TP rules defined, confirm before trusting these levels.",
+        note="Pending limit order at the 15M zone - alerted right after the CHoCH confirms, not after a tap+reaction, so you get the entry before price potentially moves through it. Leave it working until filled or the session invalidates it.",
     )
 
 
 # ---------------------------------------------------------------------------
-# 2. "London tt" (now runs on NAS100, XAUUSD, EURUSD)
+# 2. "London tt" - Pre-London Pullback -> London Continuation
+#    (unchanged - already proactive; runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def london_tt_strategy(data: dict) -> list[Alert]:
@@ -305,7 +306,8 @@ def london_tt_strategy(data: dict) -> list[Alert]:
 
 
 # ---------------------------------------------------------------------------
-# 3. "Asian tt" (now runs on NAS100, XAUUSD, EURUSD)
+# 3. "Asian tt" - Asian Sweep -> CHOCH -> 50% FVG entry
+#    (unchanged - already proactive; runs on NAS100, XAUUSD, EURUSD)
 # ---------------------------------------------------------------------------
 
 def asian_tt_strategy(data: dict) -> list[Alert]:
@@ -381,7 +383,8 @@ def _asian_tt_for_symbol(symbol: str, data: dict) -> list[Alert]:
 
 
 # ---------------------------------------------------------------------------
-# 4 & 5. "newyork" / "newyork tt" (unchanged - already covers all 3 symbols)
+# 4 & 5. "newyork" / "newyork tt" - 9 AM Candle Range Model
+#    (unchanged - already covers NAS100 + XAUUSD + EURUSD between them)
 # ---------------------------------------------------------------------------
 
 def _newyork_cr(symbol: str, data: dict, sl_buffer: float) -> list[Alert]:
