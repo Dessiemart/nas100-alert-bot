@@ -1,17 +1,17 @@
 """
-cTrader Open API client. UPDATED: now fetches ALL THREE symbols
-(NAS100, XAUUSD, EURUSD) instead of NAS100 only - Twelve Data is no
-longer used for market data at all, which removes the 800-credit/day
-ceiling entirely and is what allows the 5-minute schedule.
+cTrader Open API client. Fetches all three symbols (NAS100, XAUUSD,
+EURUSD) over one connection per run - Twelve Data is no longer used
+for market data at all.
 
-One TCP connection per run: authenticate the app once, authorize the
-account once, then fetch every requested (symbol, period) combo over
-that same connection before disconnecting.
+UPDATED: added 4H and Daily period support (H4, D1), used for the
+NAS100 snapshot file that lets the Apps Script AI-chat feature analyze
+NAS100 too, since cTrader needs a persistent connection Apps Script
+can't hold open itself.
 
-Refresh-token rotation handling is unchanged from before: cTrader hands
-back a new refresh token every time the old one is used, so the new
-access token AND new refresh token are both pushed back to GitHub
-Secrets automatically after every refresh.
+Refresh-token rotation: cTrader hands back a new refresh token every
+time the old one is used, so the new access token AND new refresh
+token are both pushed back to GitHub Secrets automatically after every
+refresh.
 """
 
 import os
@@ -49,15 +49,18 @@ PERIOD_MAP = {
     "15M": ProtoOATrendbarPeriod.M15,
     "30M": ProtoOATrendbarPeriod.M30,
     "1H": ProtoOATrendbarPeriod.H1,
+    "4H": ProtoOATrendbarPeriod.H4,
+    "1D": ProtoOATrendbarPeriod.D1,
 }
 
 COUNT_PER_PERIOD = {
-    "1M": 240, "5M": 200, "15M": 150, "30M": 120, "1H": 100,
+    "1M": 240, "5M": 200, "15M": 150, "30M": 120, "1H": 100, "4H": 100, "1D": 100,
 }
 
 LOOKBACK_MINUTES = {
     "1M": 6 * 60, "5M": 24 * 60, "15M": 3 * 24 * 60,
     "30M": 5 * 24 * 60, "1H": 10 * 24 * 60,
+    "4H": 40 * 24 * 60, "1D": 150 * 24 * 60,
 }
 
 
