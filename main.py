@@ -1,31 +1,33 @@
 """
 Entry point. Run by GitHub Actions on a schedule.
 
-UPDATED: all 3 symbols (NAS100, XAUUSD, EURUSD) now come from cTrader,
-in a single connection per run. Twelve Data is no longer used for
-market data - this removes the 800-credit/day ceiling entirely and is
-what allows dropping the schedule to 5 minutes.
+All 3 symbols (NAS100, XAUUSD, EURUSD) come from cTrader in a single
+connection per run. NAS100's 15M/1H/4H/1D are always fetched (not just
+during killzones) and written to nas100_snapshot.json, committed to
+this repo - that's what lets the Apps Script AI-chat feature analyze
+NAS100 too, since cTrader needs a persistent connection Apps Script
+can't hold open itself; this bot already holds that connection every
+5 minutes and can just save the result.
 
 Flow:
   0. Skip entirely if it's the weekend (markets closed). Can be
      overridden for manual testing via the FORCE_RUN_WEEKEND env var.
   1. Work out which symbol/timeframe combos are worth fetching right
-     now (see build_data_plan) - extra timeframes only during the
-     killzone they're relevant to, plus cheap 1H trend context always.
+     now (see build_data_plan).
   2. Fetch all of it from cTrader in one connection.
-  3. Run all five strategies against it.
-  4. For each new confirmed setup: skip it if high-impact news is
+  3. Write the NAS100 snapshot file for the AI-chat feature.
+  4. Run all five strategies against it.
+  5. For each new confirmed setup: skip it if high-impact news is
      imminent; otherwise attach a suggested position size, send it to
      Telegram, and log it for later review.
-  5. Run the partial-confluence progress checkers and send "X/Y
+  6. Run the partial-confluence progress checkers and send "X/Y
      confluences" heads-ups for setups with at least one step confirmed.
-     Also write the full current confluence state to live_setups.json
-     for the dashboard.
-  6. Once a day, send a heartbeat summary so you know the bot is alive
+  7. Once a day, send a heartbeat summary so you know the bot is alive
      even on quiet days.
 
-State (state.json), the outcome log (alerts_log.json), and live_setups.json
-are committed back to the repo by the workflow after each run.
+State (state.json), the outcome log (alerts_log.json), and the NAS100
+snapshot (nas100_snapshot.json) are committed back to the repo by the
+workflow after each run.
 """
 
 import json
@@ -52,8 +54,14 @@ from src import telegram_bot
 def build_data_plan(now) -> list:
     """Trim which symbol/timeframe combos we fetch based on which
     killzone is currently relevant - and skip any symbol disabled from
-    the dashboard (config.ALL_SYMBOLS, sourced from settings.json)."""
+    the dashboard (config.ALL_SYMBOLS, sourced from settings.json).
+
+    NAS100's 15M/4H/1D are always included (not just during killzones)
+    so the AI-chat snapshot file below is always fully populated,
+    regardless of what session is currently active - cTrader has no
+    per-call credit cost, so this is essentially free."""
     plan = [(s, "1H") for s in ("NAS100", "XAUUSD", "EURUSD")]  # always - cheap trend context
+    plan += [("NAS100", "15M"), ("NAS100", "4H"), ("NAS100", "1D")]
 
     in_asian_or_grace = ASIAN.contains(now) or ASIAN.contains(now - timedelta(hours=3))
     in_london_or_grace = LONDON.contains(now) or LONDON.contains(now - timedelta(hours=1))
@@ -101,6 +109,23 @@ def save_state(state: dict) -> None:
         json.dump(state, f)
 
 
+def write_nas100_snapshot(data: dict) -> None:
+    """Writes NAS100's 15M/1H/4H/1D candles to a JSON file committed to
+    this repo, so the Apps Script AI-chat feature can read real NAS100
+    structure via GitHub's Contents API - cTrader needs a persistent
+    connection Apps Script can't hold open itself, so this file is the
+    workaround: this bot already holds that connection every 5 minutes."""
+    snapshot = {}
+    for period_label in ("15M", "1H", "4H", "1D"):
+        candles = data.get(("NAS100", period_label), [])
+        snapshot[period_label] = [
+            {"time": c.time.isoformat(), "open": c.open, "high": c.high, "low": c.low, "close": c.close}
+            for c in candles
+        ]
+    with open("nas100_snapshot.json", "w") as f:
+        json.dump(snapshot, f)
+
+
 def append_alert_log(alert) -> None:
     entries = []
     if os.path.exists(config.ALERTS_LOG_FILE):
@@ -124,33 +149,6 @@ def append_alert_log(alert) -> None:
 
     with open(config.ALERTS_LOG_FILE, "w") as f:
         json.dump(entries, f)
-
-
-def write_live_setups(checks: list) -> None:
-    """Serialize current partial-confluence state for the dashboard."""
-    setups = []
-    for check in checks:
-        if check.confirmed == 0:
-            continue
-        setups.append({
-            "strategy": check.strategy,
-            "symbol": check.symbol,
-            "direction": check.direction,
-            "confirmed": check.confirmed,
-            "total": check.total,
-            "steps": [
-                {"label": name, "ok": bool(ok)}
-                for name, ok in zip(check.step_names, check.step_results)
-            ],
-            "leaning": "BUY" if check.direction == "buy" else ("SELL" if check.direction == "sell" else "unknown"),
-            "key": check.key,
-        })
-    payload = {
-        "updated_at_utc": datetime.utcnow().isoformat() + "Z",
-        "setups": setups,
-    }
-    with open(config.LIVE_SETUPS_FILE, "w") as f:
-        json.dump(payload, f, indent=2)
 
 
 def maybe_send_heartbeat(state: dict) -> None:
@@ -180,9 +178,8 @@ def maybe_send_daily_fundamentals(state: dict, now) -> None:
 
 
 def build_symbol_specs() -> dict:
-    """All 3 symbols now come from cTrader, and none of them expose a
-    live spec fetch in this scoped-down usage - these are the same
-    assumed contract sizes config.py already flags for verification."""
+    """All 3 symbols come from cTrader - these are the same assumed
+    contract sizes config.py already flags for verification."""
     return {
         symbol: SymbolSpec(
             lot_size=config.ASSUMED_LOT_SIZE[symbol], min_volume=1, max_volume=10000000, step_volume=1,
@@ -207,6 +204,7 @@ def main() -> None:
     print(f"[main] fetching from cTrader: {data_plan}")
 
     data = fetch_trendbars(data_plan)
+    write_nas100_snapshot(data)
     symbol_specs = build_symbol_specs()
 
     balance = config.ACCOUNT_BALANCE
@@ -255,7 +253,6 @@ def main() -> None:
     if not new_alerts:
         print("[main] no new setups this run.")
 
-    all_progress = []
     new_progress = []
     for checker_fn in ALL_PROGRESS_CHECKERS:
         try:
@@ -266,14 +263,10 @@ def main() -> None:
         for check in checks:
             if check.confirmed == 0:
                 continue
-            all_progress.append(check)
             if check.key in seen:
                 continue
             new_progress.append(check)
             seen.add(check.key)
-
-    # Always write the current confluence snapshot for the dashboard
-    write_live_setups(all_progress)
 
     for check in new_progress:
         print(f"[main] sending near-miss: {check.key}")
