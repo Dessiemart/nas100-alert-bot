@@ -1,51 +1,21 @@
 """
-Shared candle data structure and market-structure detection helpers used
-by every strategy: swing points (fractals), fair value gaps (FVG),
-inverse FVGs (IFVG), order blocks (OB), and break/change of structure
-(BOS/CHoCH).
+Candle-level detection primitives shared by every strategy.
 
-These are implemented exactly to the rules we agreed on while defining
-each strategy - see /areas/nasdaq-alert-system.md for the plain-English
-version of each rule. Where a rule said "no extra filter", this code
-adds none; where it said "candle close required", this code checks the
-close, not the wick.
+UPDATED: added three new primitives for the ChartTactix strategy set
+(strategies 6-10 in src/strategies.py):
+  - find_bpr_zones: Balanced Price Range (overlapping opposite-direction
+    FVG pair)
+  - find_all_order_blocks / find_breaker_blocks: scans a whole series
+    for every order block, then finds which ones later got invalidated
+    and flipped role (a "breaker block")
+  - detect_smt_divergence: Smart Money Divergence against a correlated
+    instrument - returns None (never fabricates) whenever either series
+    lacks enough data, per project rule
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
-
-
-@dataclass
-class Candle:
-    time: datetime  # open time, UTC
-    open: float
-    high: float
-    low: float
-    close: float
-
-    @property
-    def is_bullish(self) -> bool:
-        return self.close > self.open
-
-    @property
-    def is_bearish(self) -> bool:
-        return self.close < self.open
-
-    @property
-    def body_size(self) -> float:
-        return abs(self.close - self.open)
-
-    @property
-    def range_size(self) -> float:
-        return self.high - self.low
-
-    @property
-    def body_pct_of_range(self) -> float:
-        if self.range_size == 0:
-            return 0.0
-        return self.body_size / self.range_size
 
 
 class Direction(Enum):
@@ -54,183 +24,275 @@ class Direction(Enum):
 
 
 @dataclass
-class FVG:
-    direction: Direction
-    top: float      # upper boundary of the gap
-    bottom: float   # lower boundary of the gap
-    formed_at_index: int  # index of the middle candle (candle 2 of the 3)
-    mitigated: bool = False
+class Candle:
+    time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
 
     @property
-    def midpoint(self) -> float:
-        return (self.top + self.bottom) / 2.0
+    def is_bullish(self):
+        return self.close > self.open
+
+    @property
+    def is_bearish(self):
+        return self.close < self.open
+
+    @property
+    def body_pct_of_range(self):
+        rng = self.high - self.low
+        if rng == 0:
+            return 0
+        return abs(self.close - self.open) / rng
 
 
 @dataclass
-class OrderBlock:
-    direction: Direction  # direction of the displacement that followed it
-    candle: Candle
-    index: int
-    confirmed: bool = False
-
-
-@dataclass
-class SwingPoint:
+class Swing:
     index: int
     price: float
     is_high: bool
 
 
-def raw_trendbar_to_candle(open_time_utc: datetime, low_raw: int, delta_open: int,
-                            delta_high: int, delta_close: int) -> Candle:
-    """Convert a cTrader ProtoOATrendbar (relative integer format) into a
-    real-valued Candle. Per cTrader's docs: divide the low by 100000, then
-    add each delta (also /100000) to get open/high/close."""
-    low = low_raw / 100000.0
-    return Candle(
-        time=open_time_utc,
-        open=low + delta_open / 100000.0,
-        high=low + delta_high / 100000.0,
-        low=low,
-        close=low + delta_close / 100000.0,
-    )
-
-
-def find_swings(candles: list[Candle], width: int = 1) -> list[SwingPoint]:
-    """A candle at index i is a swing high if its high is strictly greater
-    than the highs of `width` candles on each side (and mirrored for
-    swing lows). This is the basic fractal rule used throughout."""
-    swings: list[SwingPoint] = []
-    n = len(candles)
-    for i in range(width, n - width):
-        window = candles[i - width:i + width + 1]
-        center = candles[i]
-        if all(center.high > c.high for c in window if c is not center):
-            swings.append(SwingPoint(index=i, price=center.high, is_high=True))
-        if all(center.low < c.low for c in window if c is not center):
-            swings.append(SwingPoint(index=i, price=center.low, is_high=False))
+def find_swings(candles, width=1):
+    swings = []
+    for i in range(width, len(candles) - width):
+        c = candles[i]
+        left = candles[i-width:i]
+        right = candles[i+1:i+1+width]
+        if all(c.high > o.high for o in left+right):
+            swings.append(Swing(i, c.high, True))
+        if all(c.low < o.low for o in left+right):
+            swings.append(Swing(i, c.low, False))
     return swings
 
 
-def last_swing_before(swings: list[SwingPoint], index: int, is_high: Optional[bool] = None) -> Optional[SwingPoint]:
-    candidates = [s for s in swings if s.index < index and (is_high is None or s.is_high == is_high)]
+def last_swing_before(swings, index, is_high):
+    candidates = [s for s in swings if s.index < index and s.is_high == is_high]
     if not candidates:
         return None
     return max(candidates, key=lambda s: s.index)
 
 
-def find_fvgs(candles: list[Candle], start_index: int = 0) -> list[FVG]:
-    """Classic 3-candle FVG: candle1.high < candle3.low (bullish gap) or
-    candle1.low > candle3.high (bearish gap). Gap boundaries are
-    candle1.high/candle3.low (bullish) or candle3.high/candle1.low
-    (bearish)."""
-    fvgs: list[FVG] = []
-    for i in range(max(start_index, 0) + 2, len(candles)):
-        c1, c3 = candles[i - 2], candles[i]
-        if c1.high < c3.low:
-            fvgs.append(FVG(direction=Direction.BULLISH, top=c3.low, bottom=c1.high, formed_at_index=i - 1))
-        elif c1.low > c3.high:
-            fvgs.append(FVG(direction=Direction.BEARISH, top=c1.low, bottom=c3.high, formed_at_index=i - 1))
+@dataclass
+class FVG:
+    formed_at_index: int
+    top: float
+    bottom: float
+    direction: Direction
+    mitigated: bool = False
+
+    @property
+    def midpoint(self):
+        return (self.top + self.bottom) / 2
+
+
+def find_fvgs(candles, start_index=0):
+    fvgs = []
+    for i in range(max(start_index, 2), len(candles)):
+        a, b, c = candles[i-2], candles[i-1], candles[i]
+        if a.high < c.low:
+            fvgs.append(FVG(i, c.low, a.high, Direction.BULLISH))
+        if a.low > c.high:
+            fvgs.append(FVG(i, a.low, c.high, Direction.BEARISH))
     return fvgs
 
 
-def mark_mitigated(fvgs: list[FVG], candles: list[Candle], touch_only: bool = True) -> None:
-    """Mark each FVG mitigated if price has wicked into the zone and
-    (for touch_only=True) that's sufficient - matches the 'Asian tt'
-    definition where a touch is enough, no full close-through needed."""
-    for gap in fvgs:
-        for c in candles[gap.formed_at_index + 1:]:
-            touched = c.low <= gap.top and c.high >= gap.bottom
-            if touched:
-                gap.mitigated = True
+def mark_mitigated(fvgs, candles):
+    for g in fvgs:
+        for c in candles[g.formed_at_index+1:]:
+            if c.low <= g.top and c.high >= g.bottom:
+                g.mitigated = True
                 break
 
 
-def unmitigated_fvg_in_range(fvgs: list[FVG], candles: list[Candle], leg_start: int, leg_end: int,
-                              direction: Direction) -> Optional[FVG]:
-    """Return the (first) unmitigated FVG of the given direction formed
-    within [leg_start, leg_end]."""
-    for gap in fvgs:
-        if gap.direction != direction:
-            continue
-        if not (leg_start <= gap.formed_at_index <= leg_end):
-            continue
-        if not gap.mitigated:
-            return gap
+def unmitigated_fvg_in_range(fvgs, candles, start_idx, end_idx, direction):
+    candidates = [g for g in fvgs if g.direction == direction and not g.mitigated
+                  and start_idx <= g.formed_at_index <= end_idx]
+    if not candidates:
+        return None
+    return candidates[-1]
+
+
+@dataclass
+class OrderBlock:
+    index: int
+    confirmed: bool
+    top: float = None
+    bottom: float = None
+    direction: Direction = None
+
+
+def find_order_block(candles, from_index, direction):
+    """Original single-lookup version - scans BACKWARD from from_index
+    for the most recent opposite-colour candle before a break. Used by
+    the 9AM CR model (newyork strategies) - unchanged."""
+    opposite_bullish = direction == Direction.BEARISH
+    for i in range(from_index - 1, -1, -1):
+        c = candles[i]
+        if (c.is_bullish if opposite_bullish else c.is_bearish):
+            confirmed = False
+            if i+1 < len(candles):
+                nxt = candles[i+1]
+                if direction == Direction.BULLISH and nxt.close > c.high:
+                    confirmed = True
+                if direction == Direction.BEARISH and nxt.close < c.low:
+                    confirmed = True
+            return OrderBlock(i, confirmed, top=max(c.open, c.close), bottom=min(c.open, c.close), direction=direction)
     return None
 
 
-def find_order_block(candles: list[Candle], displacement_index: int, direction: Direction) -> Optional[OrderBlock]:
-    """The last opposite-color candle before a displacement move,
-    confirmed once the *next* candle closes beyond it (per the 'newyork'
-    strategy definition). `displacement_index` is the index of the
-    displacement candle itself."""
-    opposite_is_bearish = direction == Direction.BULLISH  # bullish displacement -> look for last bearish candle
-    for i in range(displacement_index - 1, -1, -1):
-        c = candles[i]
-        if opposite_is_bearish and c.is_bearish:
-            ob_candle = c
-            ob_index = i
-            break
-        if not opposite_is_bearish and c.is_bullish:
-            ob_candle = c
-            ob_index = i
-            break
-    else:
+def find_all_order_blocks(candles):
+    """NEW - scans the WHOLE series forward for every order block (last
+    opposite-colour candle before a displacement move >=1.5x average
+    body). Used by the new Breaker Block strategies, which need to
+    check every past order block for later invalidation, not just the
+    one nearest a specific index."""
+    blocks = []
+    body_sizes = [abs(c.close - c.open) for c in candles]
+    avg_body = sum(body_sizes) / len(body_sizes) if body_sizes else 0
+    for i in range(2, len(candles)):
+        displacement = candles[i]
+        disp_body = abs(displacement.close - displacement.open)
+        if disp_body < avg_body * 1.5:
+            continue
+        prev = candles[i - 1]
+        is_bull_disp = displacement.is_bullish
+        prev_is_opposite = prev.is_bearish if is_bull_disp else prev.is_bullish
+        if not prev_is_opposite:
+            continue
+        blocks.append(OrderBlock(
+            index=i - 1, confirmed=True,
+            top=max(prev.open, prev.close), bottom=min(prev.open, prev.close),
+            direction=Direction.BULLISH if is_bull_disp else Direction.BEARISH,
+        ))
+    return blocks
+
+
+def detect_ifvg(fvgs, candles, from_index=0):
+    for g in fvgs:
+        for c in candles[g.formed_at_index+1:]:
+            if g.direction == Direction.BULLISH and c.close < g.bottom:
+                return g
+            if g.direction == Direction.BEARISH and c.close > g.top:
+                return g
+    return None
+
+
+@dataclass
+class BPR:
+    top: float
+    bottom: float
+    direction: Direction
+    newer_fvg_index: int
+    older_fvg_index: int
+
+    @property
+    def midpoint(self):
+        return (self.top + self.bottom) / 2
+
+
+def find_bpr_zones(fvgs):
+    """fvgs should be the RAW (not mitigation-filtered) list - a BPR is
+    the overlap of any bullish/bearish FVG pair regardless of whether
+    either side has since been tapped. Traded in the direction of
+    whichever FVG formed most recently."""
+    zones = []
+    bullish = [g for g in fvgs if g.direction == Direction.BULLISH]
+    bearish = [g for g in fvgs if g.direction == Direction.BEARISH]
+    for b in bullish:
+        for r in bearish:
+            top = min(b.top, r.top)
+            bottom = max(b.bottom, r.bottom)
+            if top <= bottom:
+                continue
+            newer, older = (b, r) if b.formed_at_index > r.formed_at_index else (r, b)
+            zones.append(BPR(
+                top=top, bottom=bottom, direction=newer.direction,
+                newer_fvg_index=newer.formed_at_index, older_fvg_index=older.formed_at_index,
+            ))
+    return zones
+
+
+@dataclass
+class BreakerBlock:
+    top: float
+    bottom: float
+    direction: Direction          # the NEW role after flipping
+    invalidated_at_index: int
+    original_ob_index: int
+
+
+def find_breaker_blocks(candles, order_blocks):
+    """A bullish OB becomes a bearish breaker if price later CLOSES
+    below its bottom (support failed -> flips to resistance). Symmetric
+    for a bearish OB closing above its top."""
+    breakers = []
+    for ob in order_blocks:
+        for j in range(ob.index + 1, len(candles)):
+            c = candles[j]
+            if ob.direction == Direction.BULLISH and c.close < ob.bottom:
+                breakers.append(BreakerBlock(
+                    top=ob.top, bottom=ob.bottom, direction=Direction.BEARISH,
+                    invalidated_at_index=j, original_ob_index=ob.index,
+                ))
+                break
+            if ob.direction == Direction.BEARISH and c.close > ob.top:
+                breakers.append(BreakerBlock(
+                    top=ob.top, bottom=ob.bottom, direction=Direction.BULLISH,
+                    invalidated_at_index=j, original_ob_index=ob.index,
+                ))
+                break
+    return breakers
+
+
+def detect_smt_divergence(primary_candles, correlated_candles, lookback=30):
+    """Returns Direction.BEARISH if the primary instrument made a new
+    high the correlated one didn't (liquidity grab, likely to reverse
+    down), Direction.BULLISH for the symmetric new-low case, or None if
+    there's no divergence OR either series lacks enough data. NEVER
+    fabricates a signal when data is insufficient."""
+    if len(primary_candles) < lookback or len(correlated_candles) < lookback:
         return None
 
-    confirmed = False
-    if displacement_index + 1 < len(candles):
-        confirm_candle = candles[displacement_index + 1]
-        if direction == Direction.BULLISH:
-            confirmed = confirm_candle.close > ob_candle.high
-        else:
-            confirmed = confirm_candle.close < ob_candle.low
-    return OrderBlock(direction=direction, candle=ob_candle, index=ob_index, confirmed=confirmed)
+    p = primary_candles[-lookback:]
+    c = correlated_candles[-lookback:]
 
+    p_prior_high = max(x.high for x in p[:-1])
+    c_prior_high = max(x.high for x in c[:-1])
+    if p[-1].high > p_prior_high and not (c[-1].high > c_prior_high):
+        return Direction.BEARISH
 
-def detect_ifvg(fvgs: list[FVG], candles: list[Candle], from_index: int) -> Optional[FVG]:
-    """An IFVG forms when an existing (unmitigated-until-now) FVG has its
-    FAR edge fully closed through by an opposite-direction candle,
-    flipping its role. Returns a new FVG object with direction flipped,
-    anchored at the candle that broke it."""
-    for i in range(from_index, len(candles)):
-        c = candles[i]
-        for gap in fvgs:
-            if gap.formed_at_index >= i:
-                continue
-            if gap.direction == Direction.BULLISH and c.close < gap.bottom:
-                # bullish FVG invalidated downward -> bearish IFVG
-                gap.mitigated = True
-                return FVG(direction=Direction.BEARISH, top=gap.top, bottom=gap.bottom,
-                           formed_at_index=i, mitigated=False)
-            if gap.direction == Direction.BEARISH and c.close > gap.top:
-                # bearish FVG invalidated upward -> bullish IFVG
-                gap.mitigated = True
-                return FVG(direction=Direction.BULLISH, top=gap.top, bottom=gap.bottom,
-                           formed_at_index=i, mitigated=False)
+    p_prior_low = min(x.low for x in p[:-1])
+    c_prior_low = min(x.low for x in c[:-1])
+    if p[-1].low < p_prior_low and not (c[-1].low < c_prior_low):
+        return Direction.BULLISH
+
     return None
 
 
-def structure_trend(candles: list[Candle], width: int = 1) -> Optional[Direction]:
-    """Visual HH/HL vs LH/LL trend read, using the swing sequence. Returns
-    None ('UNCLEAR') if the last two highs/lows don't agree on a single
-    direction."""
+def structure_trend(candles, width=1):
     swings = find_swings(candles, width=width)
     highs = [s for s in swings if s.is_high]
     lows = [s for s in swings if not s.is_high]
     if len(highs) < 2 or len(lows) < 2:
         return None
-    hh = highs[-1].price > highs[-2].price
-    hl = lows[-1].price > lows[-2].price
-    lh = highs[-1].price < highs[-2].price
-    ll = lows[-1].price < lows[-2].price
-    if hh and hl:
+    if highs[-1].price > highs[-2].price and lows[-1].price > lows[-2].price:
         return Direction.BULLISH
-    if lh and ll:
+    if highs[-1].price < highs[-2].price and lows[-1].price < lows[-2].price:
         return Direction.BEARISH
     return None
 
 
-def utc_now() -> datetime:
+def raw_trendbar_to_candle(open_time, low, delta_open, delta_high, delta_close):
+    return Candle(
+        time=open_time,
+        open=low + delta_open,
+        high=low + delta_high,
+        low=low,
+        close=low + delta_close,
+    )
+
+
+def utc_now():
     return datetime.now(timezone.utc)
