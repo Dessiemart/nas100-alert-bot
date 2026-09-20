@@ -62,6 +62,8 @@ def build_data_plan(now) -> list:
     per-call credit cost, so this is essentially free."""
     plan = [(s, "1H") for s in ("NAS100", "XAUUSD", "EURUSD")]  # always - cheap trend context
     plan += [("NAS100", "15M"), ("NAS100", "4H"), ("NAS100", "1D")]
+    plan += [(s, "15M") for s in ("XAUUSD", "EURUSD")]  # needed for session-agnostic strategies 6/7/10
+    plan += [(s, "15M") for s in ("US500", "XAGUSD", "GBPUSD")]  # correlated pairs for SMT strategies 8/9
 
     in_asian_or_grace = ASIAN.contains(now) or ASIAN.contains(now - timedelta(hours=3))
     in_london_or_grace = LONDON.contains(now) or LONDON.contains(now - timedelta(hours=1))
