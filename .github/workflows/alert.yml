@@ -40,6 +40,9 @@ jobs:
           SYMBOL_ID_NAS100: ${{ secrets.CTRADER_SYMBOL_ID_NAS100 }}
           SYMBOL_ID_XAUUSD: ${{ secrets.CTRADER_SYMBOL_ID_XAUUSD }}
           SYMBOL_ID_EURUSD: ${{ secrets.CTRADER_SYMBOL_ID_EURUSD }}
+          SYMBOL_ID_US500: ${{ secrets.CTRADER_SYMBOL_ID_US500 }}
+          SYMBOL_ID_XAGUSD: ${{ secrets.CTRADER_SYMBOL_ID_XAGUSD }}
+          SYMBOL_ID_GBPUSD: ${{ secrets.CTRADER_SYMBOL_ID_GBPUSD }}
           GH_PAT_FOR_SECRETS: ${{ secrets.GH_PAT_FOR_SECRETS }}
           FORCE_RUN_WEEKEND: ${{ github.event.inputs.force_run_weekend }}
         run: python main.py
