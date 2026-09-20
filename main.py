@@ -80,7 +80,9 @@ def build_data_plan(now) -> list:
     if in_ny_am:
         plan += [("NAS100", "1M"), ("XAUUSD", "1M"), ("EURUSD", "1M")]
 
-    plan = [(symbol, period) for symbol, period in plan if symbol in config.ALL_SYMBOLS]
+    correlated_symbols = ("US500", "XAGUSD", "GBPUSD")
+    plan = [(symbol, period) for symbol, period in plan
+            if symbol in config.ALL_SYMBOLS or symbol in correlated_symbols]
 
     seen = set()
     deduped = []
