@@ -49,6 +49,9 @@ CTRADER_ACCOUNT_ID = int(_env("CTRADER_ACCOUNT_ID"))
 CTRADER_SYMBOL_ID_NAS100 = int(_env("SYMBOL_ID_NAS100"))
 CTRADER_SYMBOL_ID_XAUUSD = int(_env("SYMBOL_ID_XAUUSD"))
 CTRADER_SYMBOL_ID_EURUSD = int(_env("SYMBOL_ID_EURUSD"))
+CTRADER_SYMBOL_ID_US500 = int(_env("SYMBOL_ID_US500"))
+CTRADER_SYMBOL_ID_XAGUSD = int(_env("SYMBOL_ID_XAGUSD"))
+CTRADER_SYMBOL_ID_GBPUSD = int(_env("SYMBOL_ID_GBPUSD"))
 CTRADER_IS_LIVE = _env("CTRADER_IS_LIVE", required=False, default="false").lower() == "true"
 
 # ---- Account balance for position sizing ----
