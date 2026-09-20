@@ -3,13 +3,8 @@ One-time discovery script.
 Connects to cTrader's Open API over TCP, refreshes the access token
 using the saved refresh token, lists your trading accounts, authorizes
 the first (demo) account, then lists its symbols and looks for anything
-matching NAS100, Gold (XAUUSD), or EUR/USD.
-
-UPDATED: now refreshes the access token first (via ProtoOARefreshTokenReq)
-instead of relying on the possibly-expired CTRADER_ACCESS_TOKEN secret.
-IMPORTANT: cTrader rotates the refresh token every time it's used - the
-new access token AND new refresh token are both sent via Telegram, and
-BOTH secrets need updating after this runs.
+matching NAS100, Gold (XAUUSD), EUR/USD, or the SMT correlated pairs:
+US500 (S&P 500), Silver (XAGUSD), and GBP/USD.
 
 Run this ONCE via GitHub Actions (workflow_dispatch). Has a built-in
 30-second timeout so it can never hang forever.
@@ -37,6 +32,9 @@ KEYWORD_GROUPS = {
     "NAS100": ("NAS100", "US TECH 100", "USTECH100", "NASDAQ 100", "US100"),
     "XAUUSD (Gold)": ("XAU",),
     "EURUSD": ("EUR/USD", "EURUSD"),
+    "US500 (S&P 500 - SMT pair for NAS100)": ("US500", "US 500", "SPX", "S&P 500", "SP500"),
+    "XAGUSD (Silver - SMT pair for Gold)": ("XAG",),
+    "GBPUSD (SMT pair for EURUSD)": ("GBP/USD", "GBPUSD"),
 }
 
 client = Client(EndPoints.PROTOBUF_DEMO_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
