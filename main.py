@@ -286,6 +286,7 @@ def main() -> None:
     if not new_alerts:
         print("[main] no new setups this run.")
 
+     all_current_checks = []
     new_progress = []
     for checker_fn in ALL_PROGRESS_CHECKERS:
         try:
@@ -293,6 +294,7 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"[main] progress checker {checker_fn.__name__} raised: {exc}")
             continue
+        all_current_checks.extend(checks)
         for check in checks:
             if check.confirmed == 0:
                 continue
@@ -300,6 +302,8 @@ def main() -> None:
                 continue
             new_progress.append(check)
             seen.add(check.key)
+
+    write_live_setups(all_current_checks)
 
     for check in new_progress:
         print(f"[main] sending near-miss: {check.key}")
