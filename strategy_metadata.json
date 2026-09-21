@@ -1,0 +1,153 @@
+{
+  "asians_continuation": {
+    "display_name": "Asians (Strategy 1) - continuation",
+    "symbols": ["NAS100", "XAUUSD", "EURUSD"],
+    "timeframe": "5M (with 1H trend context)",
+    "session": "Asian killzone + post-session",
+    "entry_type": "Pending limit order",
+    "steps": [
+      "Asian session high or low swept",
+      "1H trend agrees with the sweep direction (continuation)",
+      "5M Break of Structure (BOS) in the trend direction",
+      "Unmitigated 5M Fair Value Gap (FVG) found after the BOS"
+    ],
+    "notes": "Alerts the moment the FVG forms (pending limit order), not after price taps it."
+  },
+  "asians_reversal": {
+    "display_name": "Asians (Strategy 1) - reversal",
+    "symbols": ["NAS100", "XAUUSD", "EURUSD"],
+    "timeframe": "5M + 15M",
+    "session": "Asian killzone + post-session",
+    "entry_type": "Pending limit order",
+    "steps": [
+      "Asian session high or low swept",
+      "1H trend disagrees with the sweep direction (reversal)",
+      "5M Change of Character (CHoCH) - close beyond the causal swing",
+      "15M Fair Value Gap (FVG) zone found"
+    ],
+    "notes": "Alerts right after the CHoCH confirms, at the 15M zone."
+  },
+  "london_tt": {
+    "display_name": "London tt (Strategy 2)",
+    "symbols": ["NAS100", "XAUUSD", "EURUSD"],
+    "timeframe": "5M / 15M / 30M / 1H",
+    "session": "Asian session -> pre-London -> London open",
+    "entry_type": "Stop order (buy-stop/sell-stop) at the 15M candle's high/low",
+    "steps": [
+      "Asian session 15M trend is clear",
+      "Pullback of at least 25% of the Asian session's range",
+      "First 15M candle after London open closes",
+      "First 30M candle after London open agrees with the Asian trend"
+    ],
+    "notes": "TP shown is a 1:1 minimum - check higher timeframes for a nearer untapped swing to extend it."
+  },
+  "asian_tt": {
+    "display_name": "Asian tt (Strategy 3)",
+    "symbols": ["NAS100", "XAUUSD", "EURUSD"],
+    "timeframe": "5M",
+    "session": "Asian killzone + post-session",
+    "entry_type": "Pending limit order (no expiry)",
+    "steps": [
+      "Asian session high or low swept",
+      "Causal swing (the swing that supported the sweep) identified",
+      "5M Change of Character (CHoCH) - close beyond that swing",
+      "Unmitigated Fair Value Gap (FVG) found in the displacement leg"
+    ],
+    "notes": "Entry is the FVG's midpoint; SL at the causal swing; TP at the opposite Asian session extreme."
+  },
+  "newyork": {
+    "display_name": "newyork (Strategy 4)",
+    "symbols": ["NAS100"],
+    "timeframe": "1H + 1M",
+    "session": "New York AM killzone",
+    "entry_type": "Market order",
+    "steps": [
+      "8 AM New York hourly candle range marked",
+      "The next hourly candle closes beyond that range",
+      "Inversion Fair Value Gap (IFVG) forms on the 1M chart",
+      "An order block is found near the IFVG",
+      "That order block is confirmed (price closed beyond it)"
+    ],
+    "notes": "9AM Candle Range model. TP is the opposite side of the 8AM range."
+  },
+  "newyork_tt": {
+    "display_name": "newyork tt (Strategy 5)",
+    "symbols": ["XAUUSD", "EURUSD"],
+    "timeframe": "1H + 1M",
+    "session": "New York AM killzone",
+    "entry_type": "Market order",
+    "steps": [
+      "8 AM New York hourly candle range marked",
+      "The next hourly candle closes beyond that range",
+      "Inversion Fair Value Gap (IFVG) forms on the 1M chart",
+      "An order block is found near the IFVG",
+      "That order block is confirmed (price closed beyond it)"
+    ],
+    "notes": "Same 9AM Candle Range model as Strategy 4, applied to Gold and EUR/USD."
+  },
+  "strategy_6": {
+    "display_name": "Liquidity Sweep + MSS + FVG (Strategy 6)",
+    "symbols": ["NAS100", "XAUUSD", "EURUSD"],
+    "timeframe": "15M",
+    "session": "None - runs at any time of day",
+    "entry_type": "Pending limit order",
+    "steps": [
+      "A recent reference range's high or low is swept",
+      "Market Structure Shift (MSS) - close beyond the opposing swing",
+      "Unmitigated Fair Value Gap (FVG) found after the MSS"
+    ],
+    "notes": "Session-agnostic version of the sweep+structure-break+FVG concept - not tied to a specific killzone, so it can catch setups the session-restricted strategies miss."
+  },
+  "strategy_7": {
+    "display_name": "Liquidity Sweep + BPR (Strategy 7)",
+    "symbols": ["NAS100", "XAUUSD", "EURUSD"],
+    "timeframe": "15M",
+    "session": "None - runs at any time of day",
+    "entry_type": "Pending limit order",
+    "steps": [
+      "A recent reference range's high or low is swept",
+      "A Balanced Price Range (BPR) forms - an overlap between a bullish and a bearish Fair Value Gap"
+    ],
+    "notes": "Entry is at the BPR's midpoint, traded in the direction of whichever FVG formed more recently."
+  },
+  "strategy_8": {
+    "display_name": "SMT + MSS + IFVG (Strategy 8)",
+    "symbols": ["NAS100 (vs US500)", "XAUUSD (vs XAGUSD)", "EURUSD (vs GBPUSD)"],
+    "timeframe": "15M",
+    "session": "None - runs at any time of day",
+    "entry_type": "Pending limit order",
+    "steps": [
+      "Smart Money Divergence (SMT) found vs the correlated instrument - the primary sweeps a high/low the correlated one does not",
+      "Market Structure Shift (MSS) confirms the divergence direction",
+      "Inversion Fair Value Gap (IFVG) found after the MSS"
+    ],
+    "notes": "Never fires a false signal - if the correlated instrument's data is unavailable, this strategy produces nothing rather than guessing."
+  },
+  "strategy_9": {
+    "display_name": "SMT + MSS + Breaker Block (Strategy 9)",
+    "symbols": ["NAS100 (vs US500)", "XAUUSD (vs XAGUSD)", "EURUSD (vs GBPUSD)"],
+    "timeframe": "15M",
+    "session": "None - runs at any time of day",
+    "entry_type": "Pending limit order",
+    "steps": [
+      "Smart Money Divergence (SMT) found vs the correlated instrument",
+      "Market Structure Shift (MSS) confirms the divergence direction",
+      "A Breaker Block found - an order block that failed and flipped role, in the MSS direction"
+    ],
+    "notes": "Same SMT/MSS base as Strategy 8, but the entry zone is a breaker block instead of an IFVG."
+  },
+  "strategy_10": {
+    "display_name": "Liquidity Sweep + MSS + Breaker Block + FVG (Strategy 10)",
+    "symbols": ["NAS100", "XAUUSD", "EURUSD"],
+    "timeframe": "15M",
+    "session": "None - runs at any time of day",
+    "entry_type": "Pending limit order",
+    "steps": [
+      "A recent reference range's high or low is swept",
+      "Market Structure Shift (MSS) - close beyond the opposing swing",
+      "A Breaker Block found in the MSS direction",
+      "Unmitigated Fair Value Gap (FVG) found in the same direction"
+    ],
+    "notes": "Highest-conviction combo strategy - requires BOTH a breaker block AND an FVG to align, not just one."
+  }
+}v
