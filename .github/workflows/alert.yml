@@ -54,5 +54,6 @@ jobs:
           git add state.json
           if [ -f alerts_log.json ]; then git add alerts_log.json; fi
           if [ -f nas100_snapshot.json ]; then git add nas100_snapshot.json; fi
+          if [ -f live_setups.json ]; then git add live_setups.json; fi
           git diff --cached --quiet || git commit -m "Update alert state [skip ci]"
           git push
