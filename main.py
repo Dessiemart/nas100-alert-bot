@@ -128,7 +128,36 @@ def write_nas100_snapshot(data: dict) -> None:
         ]
     with open("nas100_snapshot.json", "w") as f:
         json.dump(snapshot, f)
-
+def write_live_setups(all_checks: list) -> None:
+    """Writes the currently-building confluence setups to a file the
+    dashboard reads directly - matches the exact shape pages/index.js
+    expects: {updated_at_utc, setups: [{key, strategy, symbol, leaning,
+    confirmed, total, steps: [{label, ok}]}]}. Only includes setups
+    with at least 1 confirmed step, sorted most-complete first."""
+    setups = []
+    for check in all_checks:
+        if check.confirmed == 0:
+            continue
+        leaning = "BUY" if check.direction == "buy" else ("SELL" if check.direction == "sell" else None)
+        setups.append({
+            "key": check.key,
+            "strategy": check.strategy,
+            "symbol": check.symbol,
+            "leaning": leaning,
+            "confirmed": check.confirmed,
+            "total": check.total,
+            "steps": [
+                {"label": name, "ok": ok}
+                for name, ok in zip(check.step_names, check.step_results)
+            ],
+        })
+    setups.sort(key=lambda s: s["confirmed"] / max(s["total"], 1), reverse=True)
+    payload = {
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "setups": setups,
+    }
+    with open("live_setups.json", "w") as f:
+        json.dump(payload, f)
 
 def append_alert_log(alert) -> None:
     entries = []
