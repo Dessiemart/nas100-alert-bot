@@ -1,13 +1,13 @@
 """
 Entry point. Run by GitHub Actions on a schedule.
 
-All 3 symbols (NAS100, XAUUSD, EURUSD) come from cTrader in a single
-connection per run. NAS100's 15M/1H/4H/1D are always fetched (not just
-during killzones) and written to nas100_snapshot.json, committed to
-this repo - that's what lets the Apps Script AI-chat feature analyze
-NAS100 too, since cTrader needs a persistent connection Apps Script
-can't hold open itself; this bot already holds that connection every
-5 minutes and can just save the result.
+UPDATED: writes live_setups.json (all currently-building confluence
+setups with at least 1 confirmed step) each run, for the dashboard's
+"Live Setups" section to read directly.
+
+All 3 main symbols (NAS100, XAUUSD, EURUSD) plus the 3 SMT correlated
+pairs (US500, XAGUSD, GBPUSD) come from cTrader in one connection per
+run. Twelve Data is no longer used for market data at all.
 
 Flow:
   0. Skip entirely if it's the weekend (markets closed). Can be
@@ -16,18 +16,19 @@ Flow:
      now (see build_data_plan).
   2. Fetch all of it from cTrader in one connection.
   3. Write the NAS100 snapshot file for the AI-chat feature.
-  4. Run all five strategies against it.
+  4. Run all ten strategies against it.
   5. For each new confirmed setup: skip it if high-impact news is
      imminent; otherwise attach a suggested position size, send it to
      Telegram, and log it for later review.
-  6. Run the partial-confluence progress checkers and send "X/Y
+  6. Run the partial-confluence progress checkers, write the current
+     state to live_setups.json for the dashboard, and send "X/Y
      confluences" heads-ups for setups with at least one step confirmed.
   7. Once a day, send a heartbeat summary so you know the bot is alive
      even on quiet days.
 
-State (state.json), the outcome log (alerts_log.json), and the NAS100
-snapshot (nas100_snapshot.json) are committed back to the repo by the
-workflow after each run.
+State (state.json), the outcome log (alerts_log.json), the NAS100
+snapshot (nas100_snapshot.json), and the live setups (live_setups.json)
+are committed back to the repo by the workflow after each run.
 """
 
 import json
@@ -54,12 +55,7 @@ from src import telegram_bot
 def build_data_plan(now) -> list:
     """Trim which symbol/timeframe combos we fetch based on which
     killzone is currently relevant - and skip any symbol disabled from
-    the dashboard (config.ALL_SYMBOLS, sourced from settings.json).
-
-    NAS100's 15M/4H/1D are always included (not just during killzones)
-    so the AI-chat snapshot file below is always fully populated,
-    regardless of what session is currently active - cTrader has no
-    per-call credit cost, so this is essentially free."""
+    the dashboard (config.ALL_SYMBOLS, sourced from settings.json)."""
     plan = [(s, "1H") for s in ("NAS100", "XAUUSD", "EURUSD")]  # always - cheap trend context
     plan += [("NAS100", "15M"), ("NAS100", "4H"), ("NAS100", "1D")]
     plan += [(s, "15M") for s in ("XAUUSD", "EURUSD")]  # needed for session-agnostic strategies 6/7/10
@@ -116,9 +112,7 @@ def save_state(state: dict) -> None:
 def write_nas100_snapshot(data: dict) -> None:
     """Writes NAS100's 15M/1H/4H/1D candles to a JSON file committed to
     this repo, so the Apps Script AI-chat feature can read real NAS100
-    structure via GitHub's Contents API - cTrader needs a persistent
-    connection Apps Script can't hold open itself, so this file is the
-    workaround: this bot already holds that connection every 5 minutes."""
+    structure via GitHub's Contents API."""
     snapshot = {}
     for period_label in ("15M", "1H", "4H", "1D"):
         candles = data.get(("NAS100", period_label), [])
@@ -128,6 +122,8 @@ def write_nas100_snapshot(data: dict) -> None:
         ]
     with open("nas100_snapshot.json", "w") as f:
         json.dump(snapshot, f)
+
+
 def write_live_setups(all_checks: list) -> None:
     """Writes the currently-building confluence setups to a file the
     dashboard reads directly - matches the exact shape pages/index.js
@@ -158,6 +154,7 @@ def write_live_setups(all_checks: list) -> None:
     }
     with open("live_setups.json", "w") as f:
         json.dump(payload, f)
+
 
 def append_alert_log(alert) -> None:
     entries = []
@@ -286,7 +283,7 @@ def main() -> None:
     if not new_alerts:
         print("[main] no new setups this run.")
 
-     all_current_checks = []
+    all_current_checks = []
     new_progress = []
     for checker_fn in ALL_PROGRESS_CHECKERS:
         try:
