@@ -1,386 +1,255 @@
 """
-Partial-confluence progress tracking.
-
-UPDATED: "Asians" progress checkers now match the shortened, proactive
-strategy chain (sweep -> BOS/CHoCH -> FVG found = alert fires), since
-the tap+reaction steps were removed from src/strategies.py.
-
-"Asians", "Asian tt", and "London tt" run on all three watched symbols
-(NAS100, XAUUSD, EURUSD).
+Partial-confluence progress tracking for the new SMC modules in
+src/strategies_smc.py. Mirrors each strategy step-for-step so a "X/Y
+confluences" heads-up fires BEFORE the full setup, same pattern as
+src/confluence.py.
 """
 
-from dataclasses import dataclass, field
+from datetime import timedelta
 
 import config
 from src.candles import (
     Direction, find_swings, last_swing_before, find_fvgs, mark_mitigated,
     unmitigated_fvg_in_range, find_order_block, detect_ifvg, structure_trend, utc_now,
 )
-from src.killzones import ASIAN, NEW_YORK_AM, NY_TZ, pre_london_window
-from src.strategies import _close_beyond, _zone_tap, _reaction_candle, ALL_SYMBOLS
-
-
-@dataclass
-class ConfluenceCheck:
-    strategy: str
-    symbol: str
-    direction: str
-    step_names: list
-    step_results: list
-
-    @property
-    def total(self) -> int:
-        return len(self.step_names)
-
-    @property
-    def confirmed(self) -> int:
-        return sum(1 for ok in self.step_results if ok)
-
-    @property
-    def key(self) -> str:
-        return f"progress|{self.strategy}|{self.symbol}|{self.direction}|{self.confirmed}of{self.total}"
-
-    def is_near_complete(self) -> bool:
-        missing = self.total - self.confirmed
-        return 0 < missing <= config.NEAR_MISS_MAX_MISSING
-
-    def format_message(self) -> str:
-        lines = [f"\U0001f7e1 <b>{self.confirmed}/{self.total} confluences</b> \u2014 {self.symbol} ({self.strategy})"]
-        if self.direction != "unknown":
-            lines.append(f"Leaning: {'BUY' if self.direction == 'buy' else 'SELL'}")
-        for name, ok in zip(self.step_names, self.step_results):
-            lines.append(f"{'✅' if ok else '⏳'} {name}")
-        lines.append("\u26a0\ufe0f Not a full setup yet \u2014 this is a heads-up, not an entry signal.")
-        return "\n".join(lines)
+from src.killzones import NY_TZ
+from src.strategies import _close_beyond, ALL_SYMBOLS
+from src.confluence import ConfluenceCheck
+from src.strategies_smc import (
+    _fvg_overlapping_level, _one_min_reversal, _hourly_key_level_tapped,
+)
 
 
 # ---------------------------------------------------------------------------
-# 1. "Asians" - UPDATED: matches the new proactive strategy (no more
-#    tap/reaction steps - alert fires once the FVG/zone is found).
+# 1. ORB Breakout + Retest + FVG
 # ---------------------------------------------------------------------------
 
-def check_asians_progress(data: dict) -> list[ConfluenceCheck]:
+def check_orb_progress(data: dict) -> list[ConfluenceCheck]:
     results: list[ConfluenceCheck] = []
     for symbol in ALL_SYMBOLS:
-        results += _check_asians_progress_for_symbol(symbol, data)
+        results += _check_orb_for_symbol(symbol, data)
     return results
 
 
-def _check_asians_progress_for_symbol(symbol: str, data: dict) -> list[ConfluenceCheck]:
-    c5 = data.get((symbol, "5M"), [])
+def _check_orb_for_symbol(symbol: str, data: dict) -> list[ConfluenceCheck]:
     c15 = data.get((symbol, "15M"), [])
-    c1h = data.get((symbol, "1H"), [])
-    if not c5 or not c1h:
-        return []
-
-    now = utc_now()
-    asian_start, asian_end = ASIAN.current_or_most_recent_window(now)
-    asian_candles = [c for c in c5 if asian_start <= c.time < asian_end]
-    if not asian_candles:
-        return []
-    asian_high = max(c.high for c in asian_candles)
-    asian_low = min(c.low for c in asian_candles)
-    post_asian = [c for c in c5 if c.time >= asian_end]
-    if len(post_asian) < 3:
-        return []
-
-    trend = structure_trend(c1h, width=1)
-    results: list[ConfluenceCheck] = []
-
-    for swept_is_high in (True, False):
-        level = asian_high if swept_is_high else asian_low
-        sweep_idx = next(
-            (i for i, c in enumerate(post_asian) if (c.high > level if swept_is_high else c.low < level)),
-            None,
-        )
-        swept = sweep_idx is not None
-
-        if trend is None:
-            if swept:
-                results.append(ConfluenceCheck(
-                    "Asians", symbol, "unknown",
-                    ["Asian high/low swept", "1H trend clear (continuation vs reversal)"],
-                    [True, False],
-                ))
-            continue
-
-        uptrend = trend == Direction.BULLISH
-        if swept_is_high:
-            mode, direction = ("continuation", Direction.BULLISH) if uptrend else ("reversal", Direction.BEARISH)
-        else:
-            mode, direction = ("continuation", Direction.BEARISH) if not uptrend else ("reversal", Direction.BULLISH)
-        dir_label = "buy" if direction == Direction.BULLISH else "sell"
-
-        if mode == "continuation":
-            names = ["Asian high/low swept", "1H trend agrees (continuation)", "5M BOS in trend direction",
-                     "Unmitigated 5M FVG found (this is the alert trigger)"]
-            r = [swept, swept]
-            if not swept:
-                r += [False, False]
-                results.append(ConfluenceCheck("Asians (continuation)", symbol, dir_label, names, r))
-                continue
-
-            bos_idx = None
-            for i in range(sweep_idx + 1, len(post_asian)):
-                swings = find_swings(post_asian[: i + 1], width=1)
-                ref_swing = last_swing_before(swings, i, is_high=(direction == Direction.BEARISH))
-                if ref_swing is None:
-                    continue
-                c = post_asian[i]
-                if direction == Direction.BULLISH and c.close > ref_swing.price:
-                    bos_idx = i
-                    break
-                if direction == Direction.BEARISH and c.close < ref_swing.price:
-                    bos_idx = i
-                    break
-            r.append(bos_idx is not None)
-
-            gap = None
-            if bos_idx is not None:
-                fvgs = find_fvgs(post_asian, start_index=max(bos_idx - 2, 0))
-                mark_mitigated(fvgs, post_asian)
-                gap = unmitigated_fvg_in_range(fvgs, post_asian, bos_idx, len(post_asian) - 1, direction)
-            r.append(gap is not None)
-
-            results.append(ConfluenceCheck("Asians (continuation)", symbol, dir_label, names, r))
-
-        else:
-            names = ["Asian high/low swept", "1H trend disagrees (reversal)",
-                     "5M CHoCH (close beyond swing)", "15M FVG zone found (this is the alert trigger)"]
-            r = [swept, swept]
-            if not swept:
-                r += [False, False]
-                results.append(ConfluenceCheck("Asians (reversal)", symbol, dir_label, names, r))
-                continue
-
-            swings = find_swings(post_asian[: sweep_idx + 1], width=1)
-            ref_swing = last_swing_before(swings, sweep_idx, is_high=not swept_is_high)
-            choch_idx = None
-            if ref_swing is not None:
-                choch_idx = _close_beyond(post_asian, ref_swing.price, sweep_idx + 1, direction)
-            r.append(choch_idx is not None)
-
-            zone = None
-            if choch_idx is not None:
-                zone_direction = Direction.BEARISH if swept_is_high else Direction.BULLISH
-                fvgs_15 = find_fvgs(c15)
-                mark_mitigated(fvgs_15, c15)
-                candidate_zones = [g for g in fvgs_15 if g.direction == zone_direction and not g.mitigated]
-                zone = candidate_zones[-1] if candidate_zones else None
-            r.append(zone is not None)
-
-            results.append(ConfluenceCheck("Asians (reversal)", symbol, dir_label, names, r))
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# 2. "London tt" (unchanged - runs on NAS100, XAUUSD, EURUSD)
-# ---------------------------------------------------------------------------
-
-def check_london_tt_progress(data: dict) -> list[ConfluenceCheck]:
-    results = []
-    for symbol in ALL_SYMBOLS:
-        c15 = data.get((symbol, "15M"), [])
-        c30 = data.get((symbol, "30M"), [])
-        c5 = data.get((symbol, "5M"), [])
-        if not c15 or not c30 or not c5:
-            continue
-
-        names = ["Asian 15M trend clear", "Pullback >=25% of Asian range",
-                 "15M candle closed since London start", "30M candle agrees with Asian trend"]
-        r = [False, False, False, False]
-
-        now = utc_now()
-        asian_start, asian_end = ASIAN.current_or_most_recent_window(now)
-        asian_15 = [c for c in c15 if asian_start <= c.time < asian_end]
-        if not asian_15:
-            continue
-        asian_trend = structure_trend(asian_15, width=1)
-        r[0] = asian_trend is not None
-        if asian_trend is None:
-            results.append(ConfluenceCheck("London tt", symbol, "unknown", names, r))
-            continue
-
-        direction = Direction.BULLISH if asian_trend == Direction.BULLISH else Direction.BEARISH
-        dir_label = "buy" if direction == Direction.BULLISH else "sell"
-
-        asian_5 = [c for c in c5 if asian_start <= c.time < asian_end]
-        if not asian_5:
-            results.append(ConfluenceCheck("London tt", symbol, dir_label, names, r))
-            continue
-        asian_high = max(c.high for c in asian_5)
-        asian_low = min(c.low for c in asian_5)
-        asian_range = asian_high - asian_low
-        if asian_range <= 0:
-            results.append(ConfluenceCheck("London tt", symbol, dir_label, names, r))
-            continue
-
-        _, pre_london_end = pre_london_window(now)
-        pre_london_candles = [c for c in c5 if asian_end <= c.time < pre_london_end]
-        if not pre_london_candles:
-            results.append(ConfluenceCheck("London tt", symbol, dir_label, names, r))
-            continue
-
-        if asian_trend == Direction.BULLISH:
-            pullback_extreme = min(c.low for c in pre_london_candles)
-            pullback_size = asian_high - pullback_extreme
-        else:
-            pullback_extreme = max(c.high for c in pre_london_candles)
-            pullback_size = pullback_extreme - asian_low
-        r[1] = pullback_size >= config.LONDON_TT_MIN_PULLBACK_PCT * asian_range
-
-        london_15 = [c for c in c15 if c.time >= pre_london_end]
-        london_30 = [c for c in c30 if c.time >= pre_london_end]
-        if r[1] and london_15:
-            r[2] = True
-        if r[1] and london_30:
-            trend_is_bull = asian_trend == Direction.BULLISH
-            confirm_30 = london_30[0]
-            r[3] = confirm_30.is_bullish if trend_is_bull else confirm_30.is_bearish
-
-        results.append(ConfluenceCheck("London tt", symbol, dir_label, names, r))
-    return results
-
-
-# ---------------------------------------------------------------------------
-# 3. "Asian tt" (unchanged - runs on NAS100, XAUUSD, EURUSD)
-# ---------------------------------------------------------------------------
-
-def check_asian_tt_progress(data: dict) -> list[ConfluenceCheck]:
-    results: list[ConfluenceCheck] = []
-    for symbol in ALL_SYMBOLS:
-        results += _check_asian_tt_progress_for_symbol(symbol, data)
-    return results
-
-
-def _check_asian_tt_progress_for_symbol(symbol: str, data: dict) -> list[ConfluenceCheck]:
     c5 = data.get((symbol, "5M"), [])
-    if not c5:
+    c1 = data.get((symbol, "1M"), [])
+    names = ["ORB High/Low marked (9:30 15m candle)",
+             "5M close beyond ORB level",
+             "Retest into ORB level / overlapping FVG",
+             "1M CHoCH / IFVG / OB reversal"]
+    if not c15 or not c5:
         return []
+    orb_candle = next(
+        (c for c in c15 if (t := c.time.astimezone(NY_TZ)).hour == 9 and t.minute == 30),
+        None,
+    )
+    r0 = orb_candle is not None
+    if not r0:
+        return [ConfluenceCheck("ORB", symbol, "unknown", names, [False] * 4)]
+    orb_high, orb_low = orb_candle.high, orb_candle.low
+    post = [c for c in c5 if c.time >= orb_candle.time + timedelta(minutes=15)]
+    tol = orb_high * 1e-5
 
-    now = utc_now()
-    asian_start, asian_end = ASIAN.current_or_most_recent_window(now)
-    asian_candles = [c for c in c5 if asian_start <= c.time < asian_end]
-    if not asian_candles:
-        return []
-    asian_high = max(c.high for c in asian_candles)
-    asian_low = min(c.low for c in asian_candles)
-    post_asian = [c for c in c5 if c.time >= asian_end]
-    if len(post_asian) < 3:
-        return []
-
-    names = ["Asian high/low swept", "Causal swing identified", "5M CHoCH (close beyond swing)",
-             "Unmitigated FVG found in displacement leg"]
-    results = []
-    for swept_is_high, level in ((True, asian_high), (False, asian_low)):
-        r = [False, False, False, False]
-        sweep_idx = next(
-            (i for i, c in enumerate(post_asian) if (c.high > level if swept_is_high else c.low < level)),
-            None,
-        )
-        r[0] = sweep_idx is not None
-        if sweep_idx is None:
-            continue
-
-        direction = Direction.BEARISH if swept_is_high else Direction.BULLISH
+    out = []
+    for direction, level in ((Direction.BULLISH, orb_high), (Direction.BEARISH, orb_low)):
         dir_label = "buy" if direction == Direction.BULLISH else "sell"
+        r = [True, False, False, False]
+        break_idx = _close_beyond(post, level, 1, direction) if post else None
+        r[1] = break_idx is not None
+        if break_idx is not None:
+            fvgs = find_fvgs(post, start_index=break_idx)
+            mark_mitigated(fvgs, post)
+            has_zone = bool(_fvg_overlapping_level(fvgs, level, direction, tol)) or any(
+                post[i].low <= level <= post[i].high for i in range(break_idx + 1, len(post)))
+            r[2] = has_zone
+            if has_zone and c1:
+                c1_from = [i for i, c in enumerate(c1) if c.time >= post[break_idx].time]
+                if c1_from:
+                    r[3] = _one_min_reversal(c1, c1_from[0], direction) is not None
+        out.append(ConfluenceCheck("ORB breakout+retest", symbol, dir_label, names, r))
+    return out
 
-        swings = find_swings(post_asian[: sweep_idx + 1], width=1)
-        ref_swing = last_swing_before(swings, sweep_idx, is_high=not swept_is_high)
-        r[1] = ref_swing is not None
-        if ref_swing is None:
-            results.append(ConfluenceCheck("Asian tt", symbol, dir_label, names, r))
+
+# ---------------------------------------------------------------------------
+# 2. 4H Range False Breakout / CRT Sweep
+# ---------------------------------------------------------------------------
+
+def check_fourh_fb_progress(data: dict) -> list[ConfluenceCheck]:
+    results: list[ConfluenceCheck] = []
+    names = ["4H range marked (first 4H candle of day)",
+             "5M close beyond range", "Next 5M close back inside (entry trigger)"]
+    for symbol in ALL_SYMBOLS:
+        c4h = data.get((symbol, "4H"), [])
+        c5 = data.get((symbol, "5M"), [])
+        r = [False, False, False]
+        if not c4h or not c5:
             continue
-
-        choch_idx = _close_beyond(post_asian, ref_swing.price, sweep_idx + 1, direction)
-        r[2] = choch_idx is not None
-        if choch_idx is None:
-            results.append(ConfluenceCheck("Asian tt", symbol, dir_label, names, r))
+        first_4h = next((c for c in reversed(c4h)
+                         if c.time.astimezone(NY_TZ).hour in (0, 4, 8, 12, 16, 20)), None)
+        r[0] = first_4h is not None
+        if first_4h is None:
+            results.append(ConfluenceCheck("4H range FB", symbol, "unknown", names, r))
             continue
-
-        fvgs = find_fvgs(post_asian, start_index=max(sweep_idx - 2, 0))
-        mark_mitigated(fvgs, post_asian)
-        gap = unmitigated_fvg_in_range(fvgs, post_asian, sweep_idx, choch_idx, direction)
-        r[3] = gap is not None
-
-        results.append(ConfluenceCheck("Asian tt", symbol, dir_label, names, r))
+        rh, rl = first_4h.high, first_4h.low
+        post = [c for c in c5 if c.time >= first_4h.time + timedelta(hours=4)]
+        for swept_low, direction in ((True, Direction.BULLISH), (False, Direction.BEARISH)):
+            rr = list(r)
+            beyond = (lambda c: c.close < rl) if swept_low else (lambda c: c.close > rh)
+            back_in = (lambda c: c.close > rl) if swept_low else (lambda c: c.close < rh)
+            for i in range(len(post) - 1):
+                if beyond(post[i]):
+                    rr[1] = True
+                    if back_in(post[i + 1]):
+                        rr[2] = True
+                    break
+            dir_label = "buy" if direction == Direction.BULLISH else "sell"
+            results.append(ConfluenceCheck("4H range FB", symbol, dir_label, names, rr))
     return results
 
 
 # ---------------------------------------------------------------------------
-# 4 & 5. "newyork" / "newyork tt" (unchanged - already covers all 3 symbols)
+# 3. Range Sweep + IFVG + OB
 # ---------------------------------------------------------------------------
 
-def _newyork_progress(symbol: str, data: dict) -> list[ConfluenceCheck]:
-    c1h = data.get((symbol, "1H"), [])
-    c1m = data.get((symbol, "1M"), [])
-    strategy_name = "newyork" if symbol == "NAS100" else "newyork tt"
-    names = ["8AM NY candle range marked", "Next hour closed beyond range", "IFVG formed",
-             "Order block found", "Order block confirmed"]
-    if not c1h or not c1m:
-        return []
-
-    now = utc_now()
-    ny_start, ny_end = NEW_YORK_AM.current_or_most_recent_window(now)
-    if now >= ny_end:
-        return []
-
-    r = [False, False, False, False, False]
-    eight_am_candle = next((c for c in c1h if c.time.astimezone(NY_TZ).hour == 8), None)
-    r[0] = eight_am_candle is not None
-    if eight_am_candle is None:
-        return [ConfluenceCheck(strategy_name, symbol, "unknown", names, r)]
-
-    range_high, range_low = eight_am_candle.high, eight_am_candle.low
-    later_1h = [c for c in c1h if c.time > eight_am_candle.time]
-    if not later_1h:
-        return [ConfluenceCheck(strategy_name, symbol, "unknown", names, r)]
-    next_hour = later_1h[0]
-
-    direction = None
-    if next_hour.close > range_high:
-        direction = Direction.BEARISH
-    elif next_hour.close < range_low:
-        direction = Direction.BULLISH
-    r[1] = direction is not None
-    if direction is None:
-        return [ConfluenceCheck(strategy_name, symbol, "unknown", names, r)]
-    dir_label = "buy" if direction == Direction.BULLISH else "sell"
-
-    working = [c for c in c1m if c.time >= next_hour.time]
-    if len(working) < 3:
-        return [ConfluenceCheck(strategy_name, symbol, dir_label, names, r)]
-
-    fvgs = find_fvgs(working)
-    mark_mitigated(fvgs, working)
-    ifvg = detect_ifvg(fvgs, working, from_index=2)
-    r[2] = ifvg is not None
-    if ifvg is None:
-        return [ConfluenceCheck(strategy_name, symbol, dir_label, names, r)]
-
-    ob = find_order_block(working, ifvg.formed_at_index, direction)
-    r[3] = ob is not None
-    r[4] = ob is not None and ob.confirmed
-
-    return [ConfluenceCheck(strategy_name, symbol, dir_label, names, r)]
+def check_range_sweep_progress(data: dict) -> list[ConfluenceCheck]:
+    results: list[ConfluenceCheck] = []
+    names = ["8AM 1H range marked", "Range side swept (wick)", "Key level tapped (hourly swing/equal lows/FVG)",
+             "1M IFVG formed (close back through FVG)", "OB confirmed"]
+    for symbol in ALL_SYMBOLS:
+        c1h = data.get((symbol, "1H"), [])
+        c1 = data.get((symbol, "1M"), [])
+        r = [False] * 5
+        if not c1h or not c1:
+            continue
+        range_candle = next((c for c in c1h if c.time.astimezone(NY_TZ).hour == 8), None)
+        r[0] = range_candle is not None
+        if range_candle is None:
+            results.append(ConfluenceCheck("Range sweep", symbol, "unknown", names, r))
+            continue
+        rh, rl = range_candle.high, range_candle.low
+        later = [c for c in c1h if c.time > range_candle.time]
+        if not later:
+            results.append(ConfluenceCheck("Range sweep", symbol, "unknown", names, r))
+            continue
+        working = [c for c in c1 if c.time >= later[0].time]
+        for swept_low, level, direction in ((True, rl, Direction.BULLISH), (False, rh, Direction.BEARISH)):
+            rr = list(r)
+            dir_label = "buy" if direction == Direction.BULLISH else "sell"
+            sweep_idx = next(
+                (i for i, c in enumerate(working) if (c.low < level if swept_low else c.high > level)),
+                None,
+            )
+            if sweep_idx is None:
+                results.append(ConfluenceCheck("Range sweep", symbol, dir_label, names, rr))
+                continue
+            rr[1] = True
+            sweep_price = working[sweep_idx].low if swept_low else working[sweep_idx].high
+            rr[2] = _hourly_key_level_tapped(c1h, working[sweep_idx].time, swept_low, sweep_price)
+            fvgs = find_fvgs(working, start_index=max(sweep_idx - 2, 0))
+            mark_mitigated(fvgs, working)
+            ifvg = detect_ifvg(fvgs, working, from_index=sweep_idx + 1) if rr[2] else None
+            rr[3] = ifvg is not None
+            if ifvg is not None:
+                ob = find_order_block(working, ifvg.formed_at_index, direction)
+                rr[4] = ob is not None and ob.confirmed
+            results.append(ConfluenceCheck("Range sweep IFVG OB", symbol, dir_label, names, rr))
+    return results
 
 
-def check_newyork_progress(data: dict) -> list[ConfluenceCheck]:
-    return _newyork_progress("NAS100", data)
+# ---------------------------------------------------------------------------
+# 4. Daily Profile Session Bias (informational - 2 steps)
+# ---------------------------------------------------------------------------
 
-
-def check_newyork_tt_progress(data: dict) -> list[ConfluenceCheck]:
+def check_session_bias_progress(data: dict) -> list[ConfluenceCheck]:
+    from src.strategies_smc import daily_session_bias
     results = []
-    results += _newyork_progress("XAUUSD", data)
-    results += _newyork_progress("EURUSD", data)
+    names = ["Asia range marked", "London sweep/distribution read"]
+    for symbol in ("EURUSD", "NAS100", "XAUUSD"):
+        c5 = data.get((symbol, "5M"), [])
+        asia = [c for c in c5 if (t := c.time.astimezone(NY_TZ)).hour >= 20] if c5 else []
+        london = [c for c in c5 if 2 <= (t := c.time.astimezone(NY_TZ)).hour < 5] if c5 else []
+        r = [bool(asia), bool(london)]
+        if all(r):
+            results.append(ConfluenceCheck(
+                "Session bias", symbol, daily_session_bias(data, symbol), names, r))
     return results
 
 
-ALL_PROGRESS_CHECKERS = [
-    check_asians_progress,
-    check_london_tt_progress,
-    check_asian_tt_progress,
-    check_newyork_progress,
-    check_newyork_tt_progress,
+# ---------------------------------------------------------------------------
+# 5. SMT Divergence
+# ---------------------------------------------------------------------------
+
+def check_smt_progress(data: dict, anchor: str = "NAS100",
+                       comparison: str = "EURUSD") -> list[ConfluenceCheck]:
+    from src.strategies_smc import smt_divergence_strategy
+    names = ["Divergence at swing lows/highs", "Not stale (<6h old)",
+             "MSS (close beyond causal swing)", "FVG / OB after MSS"]
+    a5 = data.get((anchor, "5M"), [])
+    c5 = data.get((comparison, "5M"), [])
+    r = [False, False, False, False]
+    if len(a5) < 10 or len(c5) < 10:
+        return [ConfluenceCheck("SMT", anchor, "unknown", names, r)]
+    swings_a = [s for s in find_swings(a5, width=1) if not s.is_high][-2:]
+    swings_c = [s for s in find_swings(c5, width=1) if not s.is_high][-2:]
+    if len(swings_a) >= 2 and len(swings_c) >= 2:
+        r[0] = (swings_a[-1].price < swings_a[-2].price and swings_c[-1].price > swings_c[-2].price) or \
+               (swings_a[-1].price > swings_a[-2].price and swings_c[-1].price < swings_c[-2].price)
+        if r[0]:
+            r[1] = (utc_now() - swings_a[-1].time).total_seconds() <= 6 * 3600
+    fired = smt_divergence_strategy(data, anchor, comparison)
+    if fired:
+        r[2] = r[3] = True
+        return [ConfluenceCheck("SMT divergence", anchor, fired[0].direction, names, r)]
+    direction = Direction.BULLISH if fired and fired[0].direction == "buy" else Direction.BEARISH
+    return [ConfluenceCheck("SMT", anchor,
+                            "buy" if r[0] and swings_a[-1].price < swings_a[-2].price else "sell",
+                            names, r)]
+
+
+# ---------------------------------------------------------------------------
+# 6. Breakout + Momentum
+# ---------------------------------------------------------------------------
+
+def check_breakout_momentum_progress(data: dict) -> list[ConfluenceCheck]:
+    results: list[ConfluenceCheck] = []
+    names = ["Consolidation marked (>=2 touches of S/R)", "Momentum candle closes beyond level"]
+    for symbol in ALL_SYMBOLS:
+        c5 = data.get((symbol, "5M"), [])
+        r = [False, False]
+        if len(c5) < 20:
+            continue
+        tol = c5[-1].close * getattr(config, "TOUCH_TOLERANCE_PCT", 2e-4)
+        swings = find_swings(c5, width=2)
+        for is_high, direction in ((True, Direction.BULLISH), (False, Direction.BEARISH)):
+            pts = [s.price for s in swings if s.is_high == is_high]
+            rr = list(r)
+            dir_label = "buy" if direction == Direction.BULLISH else "sell"
+            for i in range(len(pts)):
+                for j in range(i + 1, len(pts)):
+                    if abs(pts[i] - pts[j]) <= tol:
+                        rr[0] = True
+                        level = max(pts[i], pts[j]) if is_high else min(pts[i], pts[j])
+                        beyond = (lambda c: c.close > level) if is_high else (lambda c: c.close < level)
+                        body_ok = (getattr(config, "MOMENTUM_BODY_PCT", 0.60),)
+                        for c in c5[::-1]:
+                            if beyond(c):
+                                big = c.body_pct_of_range >= body_ok[0]
+                                rr[1] = big or rr[1]
+                                break
+                        break
+                if rr[0]:
+                    break
+            results.append(ConfluenceCheck("Breakout momentum", symbol, dir_label, names, rr))
+    return results
+
+
+ALL_SMC_PROGRESS_CHECKERS = [
+    check_orb_progress,
+    check_fourh_fb_progress,
+    check_range_sweep_progress,
+    check_session_bias_progress,
+    check_smt_progress,
+    check_breakout_momentum_progress,
 ]
