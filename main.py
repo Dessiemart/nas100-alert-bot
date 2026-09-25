@@ -41,13 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from src.ctrader_client import fetch_trendbars
 from src.strategies import ALL_STRATEGIES
-from src.strategies_smc import ALL_SMC_STRATEGIES, filter_with_topdown
 from src.confluence import ALL_PROGRESS_CHECKERS
-from src.confluence_smc import ALL_SMC_PROGRESS_CHECKERS
-
-strategies = ALL_STRATEGIES + ALL_SMC_STRATEGIES
-checkers   = ALL_PROGRESS_CHECKERS + ALL_SMC_PROGRESS_CHECKERS
-
 from src.telegram_alert import send_telegram_message, format_alert
 from src.killzones import (
     NY_TZ, ASIAN, LONDON, NEW_YORK_AM, is_weekend_market_closed,
