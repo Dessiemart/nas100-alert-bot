@@ -1,39 +1,32 @@
 """
-Ten mechanical strategies. Strategies 1-5 are the original set (renamed
+Fourteen mechanical strategies. Strategies 1-5 are the original set (renamed
 with a bracketed number, logic unchanged from the proactive rewrite).
-Strategies 6-10 are new, built from the "ChartTactix" specification:
+Strategies 6-10 are from the "ChartTactix" specification.
+Strategies 11-14 are additional entry models:
 
-  6. Liquidity Sweep + MSS + FVG        - session-agnostic version of
-     the sweep+structure-break+FVG concept (not tied to Asian session)
-  7. Liquidity Sweep + BPR              - sweep followed by a Balanced
-     Price Range (overlapping opposite-direction FVG pair)
-  8. SMT + MSS + IFVG                   - Smart Money Divergence vs a
-     correlated instrument, confirmed by structure break + inversion FVG
-  9. SMT + MSS + Breaker Block          - same SMT/MSS base, entry at a
-     breaker block (an order block that failed and flipped role) instead
-  10. Liquidity Sweep + MSS + Breaker Block + FVG - session-agnostic,
-     requires BOTH a breaker block AND an FVG together (highest-
-     conviction combo)
+  11. ORB Breakout + Retest + FVG
+  12. 4H Range False Breakout / CRT
+  13. Breakout + Momentum + Chandelier Exit (trail instructions in note only)
+  14. 8AM 1H Range Sweep + IFVG + OB
 
 Strategies 8 and 9 need a correlated instrument's candles in `data`
 (CORRELATED_PAIR below) - if that data isn't present, they return no
-alert rather than fabricate an SMT signal, per project rule. Tested via
-synthetic fixtures: all 10 run without crashing on generic/noisy data,
-Strategy 6 fires with correctly-ordered levels on a genuine crafted
-sweep+MSS+FVG setup, and Strategies 8/9 confirmed to produce ZERO
-alerts when correlated pair data is missing.
+alert rather than fabricate an SMT signal, per project rule.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 
 import config
 from src.candles import (
     Candle, Direction, find_swings, last_swing_before, find_fvgs, mark_mitigated,
     unmitigated_fvg_in_range, find_order_block, find_all_order_blocks, detect_ifvg,
     find_bpr_zones, find_breaker_blocks, detect_smt_divergence, structure_trend, utc_now,
+    atr,
 )
 from src.killzones import ASIAN, LONDON, NEW_YORK_AM, NY_TZ, pre_london_window
+
 
 
 @dataclass
@@ -727,6 +720,367 @@ def liquidity_sweep_mss_breaker_fvg_strategy(data: dict) -> list[Alert]:
     return alerts
 
 
+
+# ---------------------------------------------------------------------------
+# 11. "ORB Breakout + Retest + FVG" (Strategy 11)
+# Mark the 9:30 AM NY 15M candle's high/low as the opening range. On a 5M
+# close beyond either side, wait for a retest into an FVG that formed in
+# the breakout direction. Entry = FVG midpoint (pending limit), SL = FVG's
+# far edge, TP = 2R.
+# ---------------------------------------------------------------------------
+
+def orb_breakout_retest_fvg_strategy(data: dict) -> list[Alert]:
+    alerts = []
+    for symbol in ALL_SYMBOLS:
+        c15 = data.get((symbol, "15M"), [])
+        c5 = data.get((symbol, "5M"), [])
+        if not c15 or not c5:
+            continue
+
+        # Find the 9:30 AM NY 15M candle (opening range for US equities/CFDs)
+        orb_candle = None
+        for c in c15:
+            t_ny = c.time.astimezone(NY_TZ)
+            if t_ny.hour == 9 and t_ny.minute == 30:
+                orb_candle = c
+                break
+        if orb_candle is None:
+            continue
+
+        range_high = orb_candle.high
+        range_low = orb_candle.low
+        post = [c for c in c5 if c.time > orb_candle.time]
+        if len(post) < 5:
+            continue
+
+        # Look for first 5M close beyond the range
+        breakout_idx = None
+        direction = None
+        for i, c in enumerate(post):
+            if c.close > range_high:
+                breakout_idx = i
+                direction = Direction.BULLISH
+                break
+            if c.close < range_low:
+                breakout_idx = i
+                direction = Direction.BEARISH
+                break
+        if breakout_idx is None:
+            continue
+
+        # FVG formed in the breakout direction after the breakout.
+        # We intentionally do NOT require the FVG to still be unmitigated —
+        # the retest that confirms the setup is expected to touch the gap.
+        fvgs = find_fvgs(post, start_index=max(breakout_idx - 1, 0))
+        candidates = [g for g in fvgs if g.direction == direction
+                      and breakout_idx <= g.formed_at_index]
+        if not candidates:
+            continue
+        gap = candidates[-1]
+
+        # Retest: price has tapped the FVG after it formed
+        tapped = False
+        for c in post[gap.formed_at_index + 1:]:
+            if c.low <= gap.top and c.high >= gap.bottom:
+                tapped = True
+                break
+        if not tapped:
+            continue
+
+        entry = gap.midpoint
+        sl = gap.bottom if direction == Direction.BULLISH else gap.top
+        risk = abs(entry - sl)
+        if risk <= 0:
+            continue
+        tp = entry + 2 * risk if direction == Direction.BULLISH else entry - 2 * risk
+
+        alerts.append(Alert(
+            key=f"strat11|{symbol}|{post[gap.formed_at_index].time.isoformat()}",
+            strategy="ORB Breakout + Retest + FVG (Strategy 11)",
+            symbol=symbol,
+            direction="buy" if direction == Direction.BULLISH else "sell",
+            entry_type="limit",
+            entry=entry, sl=sl, tp=tp,
+            note="9:30 NY opening-range breakout, retest into FVG formed in breakout direction.",
+        ))
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# 12. "4H Range False Breakout / CRT" (Strategy 12)
+# Mark the first 4H candle of the trading day (day boundary in New York
+# time) as the range. If a 5M candle closes beyond the range, then a later
+# 5M candle closes back inside it, that's a false breakout — enter in the
+# reversal direction (market order) at that close. SL = the breakout
+# candle's wick extreme. TP = the opposite side of the range.
+# ---------------------------------------------------------------------------
+
+def four_h_range_false_breakout_strategy(data: dict) -> list[Alert]:
+    alerts = []
+    for symbol in ALL_SYMBOLS:
+        c4h = data.get((symbol, "4H"), [])
+        c5 = data.get((symbol, "5M"), [])
+        if not c4h or not c5:
+            continue
+
+        now = utc_now()
+        # First 4H candle of the current NY trading day (00:00 NY)
+        today_ny = now.astimezone(NY_TZ).date()
+        range_candle = None
+        for c in c4h:
+            t_ny = c.time.astimezone(NY_TZ)
+            if t_ny.date() == today_ny and t_ny.hour == 0 and t_ny.minute == 0:
+                range_candle = c
+                break
+        if range_candle is None:
+            # Fallback: most recent 4H candle that opened at 00:00 NY
+            for c in reversed(c4h):
+                t_ny = c.time.astimezone(NY_TZ)
+                if t_ny.hour == 0 and t_ny.minute == 0:
+                    range_candle = c
+                    break
+        if range_candle is None:
+            continue
+
+        range_high = range_candle.high
+        range_low = range_candle.low
+        post = [c for c in c5 if c.time > range_candle.time]
+        if len(post) < 5:
+            continue
+
+        # Find a close beyond the range, then a later close back inside
+        breakout_idx = None
+        direction = None  # direction of the false-breakout reversal
+        close_idx = None
+        for i, c in enumerate(post):
+            if c.close > range_high:
+                for j in range(i + 1, len(post)):
+                    if post[j].close < range_high and post[j].close > range_low:
+                        breakout_idx = i
+                        direction = Direction.BEARISH  # fade the upside false break
+                        close_idx = j
+                        break
+                if breakout_idx is not None:
+                    break
+            elif c.close < range_low:
+                for j in range(i + 1, len(post)):
+                    if post[j].close > range_low and post[j].close < range_high:
+                        breakout_idx = i
+                        direction = Direction.BULLISH
+                        close_idx = j
+                        break
+                if breakout_idx is not None:
+                    break
+        if breakout_idx is None or close_idx is None:
+            continue
+
+        breakout_candle = post[breakout_idx]
+        entry = post[close_idx].close
+        if direction == Direction.BEARISH:
+            sl = breakout_candle.high
+            tp = range_low
+        else:
+            sl = breakout_candle.low
+            tp = range_high
+
+        risk = abs(entry - sl)
+        if risk <= 0:
+            continue
+
+        alerts.append(Alert(
+            key=f"strat12|{symbol}|{post[close_idx].time.isoformat()}",
+            strategy="4H Range False Breakout / CRT (Strategy 12)",
+            symbol=symbol,
+            direction="buy" if direction == Direction.BULLISH else "sell",
+            entry_type="market",
+            entry=entry, sl=sl, tp=tp,
+            note="False breakout of the first 4H candle of the NY day — enter on close back inside the range.",
+        ))
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# 13. "Breakout + Momentum + Chandelier Exit" (Strategy 13)
+# Detect a consolidation range (recent N candles contained within roughly
+# 2.5x ATR). On a breakout candle with body > 1x ATR (or 3 consecutive
+# same-direction candles closing beyond the range), enter at close (market).
+# SL = the consolidation's far edge. TP1 = 1.5R (partial). Trail remainder
+# with Chandelier Exit instructions placed in the alert note only (bot does
+# not manage open trades).
+# ---------------------------------------------------------------------------
+
+def breakout_momentum_chandelier_strategy(data: dict) -> list[Alert]:
+    alerts = []
+    for symbol in ALL_SYMBOLS:
+        c15 = data.get((symbol, "15M"), [])
+        if not c15 or len(c15) < 40:
+            continue
+
+        current_atr = atr(c15, period=14)
+        if current_atr is None or current_atr <= 0:
+            continue
+
+        # Look for a recent consolidation: last 8-12 candles range <= 2.5 * ATR
+        lookback = 10
+        if len(c15) < lookback + 5:
+            continue
+        consol = c15[-(lookback + 5):-5]
+        consol_high = max(c.high for c in consol)
+        consol_low = min(c.low for c in consol)
+        consol_range = consol_high - consol_low
+        if consol_range > 2.5 * current_atr:
+            continue
+
+        # Breakout: last candle body > 1x ATR and closes beyond consol, OR
+        # 3 consecutive same-direction closes beyond the range
+        recent = c15[-5:]
+        direction = None
+        entry_candle = None
+
+        last = recent[-1]
+        body = abs(last.close - last.open)
+        if body >= current_atr:
+            if last.close > consol_high and last.is_bullish:
+                direction = Direction.BULLISH
+                entry_candle = last
+            elif last.close < consol_low and last.is_bearish:
+                direction = Direction.BEARISH
+                entry_candle = last
+
+        if direction is None:
+            # 3 consecutive
+            if (all(c.close > consol_high for c in recent[-3:]) and
+                    all(c.is_bullish for c in recent[-3:])):
+                direction = Direction.BULLISH
+                entry_candle = recent[-1]
+            elif (all(c.close < consol_low for c in recent[-3:]) and
+                  all(c.is_bearish for c in recent[-3:])):
+                direction = Direction.BEARISH
+                entry_candle = recent[-1]
+
+        if direction is None or entry_candle is None:
+            continue
+
+        entry = entry_candle.close
+        if direction == Direction.BULLISH:
+            sl = consol_low
+            risk = entry - sl
+            tp1 = entry + 1.5 * risk
+        else:
+            sl = consol_high
+            risk = sl - entry
+            tp1 = entry - 1.5 * risk
+
+        if risk <= 0:
+            continue
+
+        trail_note = (
+            "TP1 = 1.5R (partial). After TP1, trail remainder with Chandelier Exit: "
+            "for longs use highest-high-since-entry minus (ATR × 2); for shorts use "
+            "lowest-low-since-entry plus (ATR × 2). Exit early on a colour change "
+            "against the position. Bot does not manage the trade after alert."
+        )
+
+        alerts.append(Alert(
+            key=f"strat13|{symbol}|{entry_candle.time.isoformat()}",
+            strategy="Breakout + Momentum + Chandelier Exit (Strategy 13)",
+            symbol=symbol,
+            direction="buy" if direction == Direction.BULLISH else "sell",
+            entry_type="market",
+            entry=entry, sl=sl, tp=tp1,
+            note=trail_note,
+        ))
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# 14. "8AM 1H Range Sweep + IFVG + OB" (Strategy 14)
+# Mark the 8:00 AM NY 1H candle's high/low as the range. Wait for a later
+# 1M/5M candle to sweep one side, then form an Inversion FVG, then find a
+# confirmed order block near it. Entry = market at the candle after the
+# IFVG. SL = the causal swing. TP = opposite side of the 8AM range.
+# ---------------------------------------------------------------------------
+
+def eight_am_sweep_ifvg_ob_strategy(data: dict) -> list[Alert]:
+    alerts = []
+    for symbol in ALL_SYMBOLS:
+        c1h = data.get((symbol, "1H"), [])
+        # Prefer 1M, fall back to 5M
+        c_fine = data.get((symbol, "1M"), []) or data.get((symbol, "5M"), [])
+        if not c1h or not c_fine:
+            continue
+
+        # 8:00 AM NY 1H candle
+        eight_am = None
+        for c in c1h:
+            t_ny = c.time.astimezone(NY_TZ)
+            if t_ny.hour == 8 and t_ny.minute == 0:
+                eight_am = c
+                break
+        if eight_am is None:
+            continue
+
+        range_high = eight_am.high
+        range_low = eight_am.low
+        post = [c for c in c_fine if c.time > eight_am.time]
+        if len(post) < 10:
+            continue
+
+        # Sweep of one side of the range
+        swept_high = False
+        swept_low = False
+        sweep_idx = None
+        for i, c in enumerate(post):
+            if c.high > range_high:
+                swept_high = True
+                sweep_idx = i
+                break
+            if c.low < range_low:
+                swept_low = True
+                sweep_idx = i
+                break
+        if sweep_idx is None:
+            continue
+
+        # Direction after sweep
+        if swept_high:
+            direction = Direction.BEARISH
+        else:
+            direction = Direction.BULLISH
+
+        # Find IFVG after the sweep
+        fvgs = find_fvgs(post, start_index=max(sweep_idx, 0))
+        mark_mitigated(fvgs, post)
+        ifvg = detect_ifvg(fvgs, post, from_index=sweep_idx)
+        if ifvg is None:
+            continue
+
+        ob = find_order_block(post, ifvg.formed_at_index, direction)
+        if ob is None or not ob.confirmed:
+            continue
+
+        entry_idx = min(ifvg.formed_at_index + 1, len(post) - 1)
+        entry = post[entry_idx].close
+
+        swings = find_swings(post[: ifvg.formed_at_index + 1], width=1)
+        ref_swing = last_swing_before(swings, ifvg.formed_at_index, is_high=(direction == Direction.BEARISH))
+        if ref_swing is None:
+            continue
+        sl = ref_swing.price
+        tp = range_low if direction == Direction.BEARISH else range_high
+
+        alerts.append(Alert(
+            key=f"strat14|{symbol}|{post[ifvg.formed_at_index].time.isoformat()}",
+            strategy="8AM 1H Range Sweep + IFVG + OB (Strategy 14)",
+            symbol=symbol,
+            direction="buy" if direction == Direction.BULLISH else "sell",
+            entry_type="market",
+            entry=entry, sl=sl, tp=tp,
+            note="8AM NY 1H range swept, IFVG + confirmed order block. TP is the opposite side of the 8AM range.",
+        ))
+    return alerts
+
+
 ALL_STRATEGIES = [
     asians_strategy,
     london_tt_strategy,
@@ -738,4 +1092,8 @@ ALL_STRATEGIES = [
     smt_mss_ifvg_strategy,
     smt_mss_breaker_strategy,
     liquidity_sweep_mss_breaker_fvg_strategy,
+    orb_breakout_retest_fvg_strategy,
+    four_h_range_false_breakout_strategy,
+    breakout_momentum_chandelier_strategy,
+    eight_am_sweep_ifvg_ob_strategy,
 ]
