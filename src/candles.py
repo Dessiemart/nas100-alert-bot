@@ -284,6 +284,23 @@ def structure_trend(candles, width=1):
     return None
 
 
+def atr(candles, period=14):
+    """Average True Range over the last `period` candles. Returns None if
+    insufficient data. Uses the standard True Range formula."""
+    if len(candles) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        high = candles[i].high
+        low = candles[i].low
+        prev_close = candles[i - 1].close
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        trs.append(tr)
+    if len(trs) < period:
+        return None
+    return sum(trs[-period:]) / period
+
+
 def raw_trendbar_to_candle(open_time, low, delta_open, delta_high, delta_close):
     return Candle(
         time=open_time,
